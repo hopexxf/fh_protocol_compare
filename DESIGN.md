@@ -1,8 +1,8 @@
 # FH Protocol Compare — 技术方案
 
-> 状态：草稿 v0.2
+> 状态：v1.0（工程框架完成）
 > 创建：2026-07-30
-> 更新：2026-07-30（调研后更新）
+> 更新：2026-07-30（框架完成 + 环境验证）
 > 负责人：通信大佬 + 通信小粉
 
 ---
@@ -127,10 +127,19 @@ C:\myfile\project\fh_protocol_compare\
 
 ### 5.3 章节对齐策略
 
+> ⚠️ **重要约束**：O-RAN（O-RAN Alliance）和 ASTRI 是**不同标准组织**，章节编号和文档结构完全不同。严禁依赖章节编号做匹配。
+
 - 提取每个文档的标题层级（章/节/子节）
-- 基于标题文本相似度（TF-IDF + 余弦相似度）匹配 Base ↔ Compare 章节
+- **基于语义相似度匹配**（TF-IDF + 余弦相似度），而非标题编号
+- 引入关键词触发机制：识别以下核心功能领域的章节优先对齐
+  - U-plane 字段定义（`uplane`, `U-Plane`, `user plane`, `UP Field`）
+  - C-plane 字段定义（`cplane`, `C-Plane`, `control plane`, `CP Field`）
+  - 信道传输映射（`channel mapping`, `transport`, `IQ Data`）
+  - 消息结构（`message structure`, `IE`, `information element`）
+  - 定时同步（`timing`, `synchronization`, `TDD`）
 - 输出 `alignment.json`，记录 `base_section_id ↔ compare_section_id` 映射
 - 未对齐章节单独标记（Base 独有 / Compare 独有）
+- **语义覆盖度检查**：若某核心功能在两文档中均出现但未被对齐，人工告警
 
 ### 5.4 LLM 分析策略
 
@@ -216,10 +225,15 @@ py -3 main.py --batch
 
 | 模块 | 工具 | 备注 |
 |------|------|------|
-| PDF 解析 | `PyMuPDF` | 速度快，表格处理较好 |
-| Word 解析 | `python-docx` | 标题层级提取 |
-| 章节对齐 | `difflib` + `scikit-learn` TF-IDF | 相似度匹配 |
-| LLM 调用 | 复用 arxiv_agent `LLMClient` | 多端点降级 |
+| PDF 解析（主） | `pdfplumber` 0.11.9 | 表格支持好，3GPP PDF 验证通过 |
+| PDF 解析（备） | `pdfminer.six` | 复杂布局兜底 |
+| PDF 渲染 | `pypdfium2` 5.7.0 | 图片/OCR 辅助 |
+| Word 解析 | `python-docx` 1.2.0 | 标题层级提取 |
+| 向量嵌入 | `sentence-transformers` 5.3.0 | all-MiniLM-L6-v2 已缓存（~18MB） |
+| 章节对齐 | `scikit-learn` TF-IDF + 余弦相似度 | |
+| 文本 diff（主） | `diff-match-patch`（vendor 内联） | Google 出品，PyPI 已下架，从 GitHub master 分支下载内联 |
+| 文本 diff（备） | `difflib` | Python 标准库 |
+| LLM 调用 | 本项目 `llm_client.py`（参考 arxiv_agent） | 多端点降级链 |
 | 日志 | Python `logging` | 结构化日志，按日期滚动 |
 
 ---
