@@ -1,0 +1,63 @@
+# FH Protocol Compare — 配置文件模板
+#
+# 复制此文件为 settings.yml 并填入实际值。
+#
+# 环境变量优先级高于本文件：
+#   LLM_MODEL      -> llm.model
+#   LLM_API_KEY    -> llm.api_key
+#   LLM_BASE_URL   -> llm.base_url
+#   LOG_DIR        -> paths.log_dir
+
+# LLM 配置
+llm:
+  use_openclaw: true           # 是否使用 OpenClaw 集成（推荐，优先使用）
+  api_key: ""                  # 直连 API Key（留空则通过 OpenClaw 调用）
+  model: "gpt-3.5-turbo"      # 直连时的模型
+  base_url: "https://api.openai.com/v1"
+  temperature: 0.3
+  max_tokens: 1500
+  timeout: 120                 # 请求超时（秒）
+
+# 比对维度配置
+dimensions:
+  feature_added: true
+  feature_changed: true
+  feature_removed: true
+  design_diff: true
+  param_diff: true
+  consistency_issue: true
+
+# 章节对齐阈值
+alignment:
+  similarity_threshold: 0.3    # TF-IDF 相似度低于此值认为不匹配
+  use_number_prefix: true      # 是否优先用编号前缀匹配
+
+# 差异检测
+diff:
+  min_change_chars: 30        # 低于此字符数的变更视为噪声
+
+# 分析配置
+analysis:
+  analyze_added_sections: true   # 是否分析 Compare 独有章节
+  analyze_removed_sections: true  # 是否分析 Base 独有章节
+  max_tokens_per_call: 1500
+
+# 路径配置
+paths:
+  input_base: "input/base"           # Base 文档目录
+  input_compare: "input/compare"      # Compare 文档目录
+  output_dir: "versions"             # 比对结果归档目录
+  specs_dir: "specs"                 # 结构化提取产物目录
+  log_dir: "logs"                   # 日志目录
+
+# 日志配置
+logging:
+  level: "INFO"                    # DEBUG / INFO / WARNING
+  console: true
+  file: true
+
+# 批量比对配置
+# 启动时指定 --batch 即可执行
+batch:
+  base_file: ""                      # Base 文档路径（相对于项目根目录或绝对路径）
+  compare_files: []                  # Compare 文档路径列表
