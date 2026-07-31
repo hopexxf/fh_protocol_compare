@@ -45,6 +45,10 @@ layer_responsibility: |
 # ============================================================
 diff_patterns:
   # ------------------ 高优先级（核心架构/流程）------------------
+  "前传切分":
+    hint: "DU/RU/FHM功能切分模型影响整体架构，常见影响：高"
+    keywords: ["Split8", "Split7.2x", "7-2x", "PHY Low", "PHY High"]
+    priority: 10
   
   "C-plane Section Type":
     hint: "C-plane Section Type（0/1/3/5/6）定义调度结构，变更影响控制信令解析，常见影响：高"
@@ -61,19 +65,19 @@ diff_patterns:
     keywords: ["PRACH", "preamble", "random access", "RACH", "timeOffset"]
     priority: 10
   
-  "S-plane 同步":
+  "时钟同步":
     hint: "同步机制（PTP/G.8275.1/SyncE）变更影响系统时钟精度，可能导致系统级故障，常见影响：高"
     keywords: ["PTP", "G.8275", "SyncE", "synchronization", "S-plane", "clock", "timestamp", "timing advance"]
     priority: 10
   
-  "HARQ":
-    hint: "HARQ（混合自动重传）相关参数变更影响重传机制与吞吐，常见影响：高"
-    keywords: ["HARQ", "ACK", "NACK", "retransmission", "redundancy version", "RV"]
+  "压缩算法":
+    hint: "压缩算法支持能力影响BU和RU对接，常见影响：高"
+    keywords: ["compression", "BFP", "μ-law"]
     priority: 9
   
-  "TDD 配置":
-    hint: "TDD 时隙配置（DD SUU 等）变更影响上下行时序，常见影响：高"
-    keywords: ["TDD", "slot configuration", "DD SUU", "uplink-downlink", "slot format"]
+  "LLS拓扑配置":
+    hint: "4种前传同步拓扑影响BU和RU之间组网，常见影响：高"
+    keywords: ["LLS-C1", "LLS-C2", "LLS-C3", "LLS-C4"]
     priority: 9
   
   "FFT Size":

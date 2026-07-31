@@ -207,22 +207,25 @@ def parse_docx(docx_path: str) -> tuple[str, list[dict]]:
     return md, raw_paragraphs
 
 
-def parse_document(doc_path: str) -> tuple[str, list[dict]]:
+def parse_document(doc_path: str, extract_tables: bool = True) -> tuple[str, list[dict], list[dict]]:
     """
     统一入口：根据文件扩展名自动选择解析器。
 
     Args:
         doc_path: PDF 或 DOCX 文件路径
+        extract_tables: 是否启用表格提取（仅 PDF）
 
     Returns:
-        (structured_markdown: str, raw_pages/paragraphs: list[dict])
+        (structured_markdown: str, raw_pages/paragraphs: list[dict], tables: list[dict])
+        tables 仅 PDF 返回，DOCX 返回空列表
     """
     ext = Path(doc_path).suffix.lower()
     if ext == ".pdf":
         from src.parser_pdf import parse_pdf
-        return parse_pdf(doc_path)
+        return parse_pdf(doc_path, extract_tables=extract_tables)
     elif ext in (".docx", ".doc"):
-        return parse_docx(doc_path)
+        md, paras = parse_docx(doc_path)
+        return md, paras, []  # DOCX 表格处理待实现
     else:
         raise ValueError(f"不支持的文档格式: {ext}，仅支持 PDF 和 DOCX")
 

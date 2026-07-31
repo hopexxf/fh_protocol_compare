@@ -130,10 +130,11 @@ class TestPdfminerFallback:
 class TestAutoDetectParser:
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_parse_pdf_returns_tuple(self):
-        """parse_pdf 返回 (markdown: str, raw_pages: list[dict])"""
-        md, pages = parse_pdf(ASTRI_PDF)
+        """parse_pdf 返回 (markdown: str, raw_pages: list[dict], tables: list[dict])"""
+        md, pages, tables = parse_pdf(ASTRI_PDF)
         assert isinstance(md, str)
         assert isinstance(pages, list)
+        assert isinstance(tables, list)
         assert len(pages) > 0
         # 每页应有 page_num 和 text
         assert all("page_num" in p and "text" in p for p in pages)
@@ -141,14 +142,14 @@ class TestAutoDetectParser:
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_parse_pdf_markdown_not_empty(self):
         """Markdown 输出非空"""
-        md, pages = parse_pdf(ASTRI_PDF)
+        md, pages, tables = parse_pdf(ASTRI_PDF)
         assert len(md) > 1000, f"Markdown 应有 > 1000 字符，实际 {len(md)}"
         assert "<!-- page=" in md, "应包含页码标记"
 
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_parse_pdf_page_count(self):
         """页数与原始 PDF 匹配（ASTRI ~27 页）"""
-        _, pages = parse_pdf(ASTRI_PDF)
+        md, pages, tables = parse_pdf(ASTRI_PDF)
         assert 20 <= len(pages) <= 35, f"ASTRI 页数应在 20~35 之间，实际 {len(pages)}"
 
 

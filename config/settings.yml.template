@@ -57,8 +57,11 @@ logging:
   console: true
   file: true
 
-# 批量比对配置
-# 启动时指定 --batch 即可执行
-batch:
-  base_file: ""                      # Base 文档路径（相对于项目根目录或绝对路径）
-  compare_files: []                  # Compare 文档路径列表
+# 表格提取配置
+pdf:
+  use_camelot: true              # 是否启用 camelot 表格提取
+  camelot_flavor: "stream"       # stream（无需 Ghostscript）或 lattice（需要 Ghostscript，精度更高）
+  table_min_accuracy: 80         # 表格提取准确度阈值（低于此值告警）
+  fallback_to_pdfplumber: true   # camelot 失败时是否回退到 pdfplumber
+  extract_tables: true           # 是否启用表格提取
+  insert_tables_to_sections: true  # 是否将表格插回章节（Phase 2）

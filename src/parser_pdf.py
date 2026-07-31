@@ -126,6 +126,115 @@ def extract_tables_pdfplumber(pdf_path: str) -> list[dict]:
     return tables
 
 
+def extract_tables_camelot(pdf_path: str, flavor: str = "stream") -> list[dict]:
+    """
+    使用 camelot 提取表格（高精度）。
+
+    Args:
+        pdf_path: PDF 文件路径
+        flavor: 'lattice'（有格线，需要 Ghostscript）或 'stream'（无格线，无需 Ghostscript）
+
+    Returns:
+        list[dict]: [
+            {
+                "page_num": int,
+                "table_index": int,
+                "table": list[list[str]],  # 二维数组
+                "accuracy": float,         # 提取准确度 (0-100)
+                "bbox": tuple,             # 表格边界 (x1, y1, x2, y2)
+            },
+            ...
+        ]
+    """
+    import camelot
+
+    logger.info(f"[Camelot] 开始提取表格: {pdf_path}, flavor={flavor}")
+
+    try:
+        tables = camelot.read_pdf(pdf_path, pages='all', flavor=flavor)
+
+        results = []
+        for i, t in enumerate(tables):
+            results.append({
+                "page_num": int(t.page),
+                "table_index": i,
+                "table": t.df.values.tolist(),
+                "accuracy": float(t.accuracy),
+                "bbox": t._bbox if hasattr(t, '_bbox') else None,
+            })
+
+        logger.info(f"[Camelot] 提取完成，共 {len(results)} 个表格")
+        return results
+
+    except Exception as e:
+        logger.error(f"[Camelot] 提取失败: {e}")
+        raise
+
+
+def _table_to_markdown(table_data: list[list[str]], caption: str = "") -> str:
+    """
+    将单个表格转换为 Markdown 格式。
+
+    Args:
+        table_data: 二维数组（含表头）
+        caption: 表格标题（可选）
+
+    Returns:
+        Markdown 格式的表格字符串
+    """
+    if not table_data or len(table_data) < 1:
+        return ""
+
+    lines = []
+
+    # 表格标题
+    if caption:
+        lines.append(f"**{caption}**\n")
+
+    # 表头
+    header = table_data[0]
+    lines.append("| " + " | ".join(str(cell).strip().replace("\n", " ") for cell in header) + " |")
+    lines.append("|" + "|".join(["---"] * len(header)) + "|")
+
+    # 表体
+    for row in table_data[1:]:
+        # 处理空单元格和换行
+        cells = [str(cell).strip().replace("\n", " ") if cell else "" for cell in row]
+        lines.append("| " + " | ".join(cells) + " |")
+
+    return "\n".join(lines) + "\n"
+
+
+def _tables_to_markdown(tables: list[dict]) -> str:
+    """
+    将表格列表转换为 Markdown 格式（批量）。
+
+    每个表格标注页码和准确度，便于溯源。
+    """
+    if not tables:
+        return ""
+
+    lines = ["\n\n---\n\n## 表格列表\n"]
+
+    for tbl in tables:
+        # 章节信息（Phase 2 会填充）
+        section_info = tbl.get("section_title", "")
+        if section_info:
+            caption = f"表格 {tbl['table_index']+1}（{section_info}，P{tbl['page_num']}）"
+        else:
+            caption = f"表格 {tbl['page_num']}-{tbl['table_index']}（P{tbl['page_num']}）"
+
+        # 准确度信息
+        if "accuracy" in tbl:
+            caption += f"，准确度 {tbl['accuracy']:.1f}%"
+
+        lines.append(f"\n### {caption}\n\n")
+        lines.append(_table_to_markdown(tbl["table"]))
+        lines.append(f"\n<!-- table_page={tbl['page_num']} table_index={tbl['table_index']} -->\n")
+
+    return "\n".join(lines)
+
+
 def extract_text_pdfminer(pdf_path: str) -> list[dict]:
     """
     使用 pdfminer.six 提取 PDF 文本（备选方案，用于复杂布局）。
@@ -218,17 +327,23 @@ def parse_pdf(
     pdf_path: str,
     *,
     use_miner_fallback: bool = True,
-) -> tuple[str, list[dict]]:
+    extract_tables: bool = True,
+    insert_tables_to_sections: bool = False,  # Phase 2 实现
+) -> tuple[str, list[dict], list[dict]]:
     """
     解析 PDF 文档的主入口。
 
-    优先使用 pdfplumber，若提取结果异常（文本过少），自动回退到 pdfminer。
+    优先使用 pdfplumber 提取文本，若结果异常则回退到 pdfminer。
+    支持表格提取（camelot 优先，pdfplumber 兜底）。
 
     Args:
         pdf_path: PDF 文件路径
+        use_miner_fallback: 是否在 pdfplumber 失败时回退到 pdfminer
+        extract_tables: 是否启用表格提取
+        insert_tables_to_sections: 是否将表格插回章节（Phase 2）
 
     Returns:
-        (structured_markdown: str, raw_pages: list[dict])
+        (structured_markdown: str, raw_pages: list[dict], tables: list[dict])
     """
     import os
 
@@ -236,23 +351,95 @@ def parse_pdf(
         raise FileNotFoundError(f"PDF 文件不存在: {pdf_path}")
 
     logger.info(f"[PDF] 开始解析: {pdf_path}")
+
+    # 1. 提取文本
     try:
         pages = extract_text_pdfplumber(pdf_path)
         total_chars = sum(len(p["text"]) for p in pages)
-        logger.info(f"[PDF] pdfplumber 提取完成，共 {len(pages)} 页，{total_chars} 字符")
+        logger.info(f"[PDF] 文本提取完成，{len(pages)} 页，{total_chars} 字符")
 
         if total_chars < 100 and use_miner_fallback:
             logger.warning("[PDF] pdfplumber 结果过少，切换至 pdfminer")
             pages = extract_text_pdfminer(pdf_path)
             total_chars = sum(len(p["text"]) for p in pages)
-            logger.info(f"[PDF] pdfminer 提取完成，共 {len(pages)} 页，{total_chars} 字符")
+            logger.info(f"[PDF] pdfminer 提取完成，{len(pages)} 页，{total_chars} 字符")
 
     except ImportError as e:
         logger.error(f"[PDF] 缺少依赖: {e}")
         raise
 
+    # 2. 转换为 Markdown
     md = to_structured_markdown(pages)
-    return md, pages
+
+    # 3. 提取表格
+    tables = []
+    if extract_tables:
+        tables = _extract_tables_with_config(pdf_path, md, pages)
+
+        # 4. 处理表格（追加到 Markdown）
+        if tables:
+            if insert_tables_to_sections:
+                # Phase 2：插回章节（待实现）
+                logger.warning("[PDF] insert_tables_to_sections 尚未实现，表格将追加到文档末尾")
+                md += _tables_to_markdown(tables)
+            else:
+                # Phase 1：追加到文档末尾
+                md += _tables_to_markdown(tables)
+
+    return md, pages, tables
+
+
+def _extract_tables_with_config(pdf_path: str, md: str, pages: list[dict]) -> list[dict]:
+    """
+    根据配置提取表格（camelot 优先，pdfplumber 兜底）。
+
+    Returns:
+        表格列表，每个元素包含：
+        {
+            "page_num": int,
+            "table_index": int,
+            "table": list[list[str]],
+            "accuracy": float (camelot),
+            "bbox": tuple (camelot),
+        }
+    """
+    from src.config_loader import get_config
+
+    config = get_config()
+    pdf_config = config.get("pdf", {})
+
+    use_camelot = pdf_config.get("use_camelot", True)
+    flavor = pdf_config.get("camelot_flavor", "stream")
+    min_accuracy = pdf_config.get("table_min_accuracy", 80)
+    fallback = pdf_config.get("fallback_to_pdfplumber", True)
+
+    tables = []
+
+    if use_camelot:
+        try:
+            tables = extract_tables_camelot(pdf_path, flavor=flavor)
+
+            # 检查准确度
+            low_accuracy = [t for t in tables if t.get("accuracy", 100) < min_accuracy]
+            if low_accuracy:
+                logger.warning(f"[PDF] {len(low_accuracy)} 个表格准确度低于 {min_accuracy}%")
+
+            logger.info(f"[PDF] Camelot 表格提取完成，{len(tables)} 个表格")
+
+        except Exception as e:
+            logger.warning(f"[PDF] Camelot 提取失败: {e}")
+            if fallback:
+                logger.info("[PDF] 回退到 pdfplumber 表格提取")
+                tables = extract_tables_pdfplumber(pdf_path)
+                logger.info(f"[PDF] pdfplumber 表格提取完成，{len(tables)} 个表格")
+            else:
+                logger.error("[PDF] 表格提取失败，未启用降级")
+                tables = []
+    else:
+        tables = extract_tables_pdfplumber(pdf_path)
+        logger.info(f"[PDF] pdfplumber 表格提取完成，{len(tables)} 个表格")
+
+    return tables
 
 
 # ---------------------------------------------------------------------------
@@ -267,5 +454,8 @@ if __name__ == "__main__":
         print("用法: python -m src.parser_pdf <pdf_path>")
         sys.exit(1)
 
-    md, pages = parse_pdf(sys.argv[1])
+    md, pages, tables = parse_pdf(sys.argv[1])
     print(md[:3000])
+    print(f"\n\n表格数量: {len(tables)}")
+    for t in tables[:3]:
+        print(f"  P{t['page_num']}: {len(t['table'])} rows, accuracy={t.get('accuracy', 'N/A')}")
