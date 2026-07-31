@@ -426,6 +426,7 @@ class TestPromptTemplates:
             base_content="Base content",
             compare_content="Compare content",
             diff_summary="变更摘要",
+            dynamic_hint="**动态提示**：\n- test hint",
         )
         assert "Base 章节" in prompt
         assert "Compare 章节" in prompt

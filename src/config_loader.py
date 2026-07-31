@@ -78,3 +78,37 @@ class Config:
 
 def get_config() -> Config:
     return Config()
+
+
+# ---------------------------------------------------------------------------
+# 业务知识加载
+# ---------------------------------------------------------------------------
+
+_knowledge_cache: dict = {}
+
+
+def get_knowledge() -> dict:
+    """
+    加载业务知识配置（knowledge.yml）
+    
+    Returns:
+        dict: 包含 org_background / layer_responsibility / diff_patterns 的字典
+    """
+    global _knowledge_cache
+    
+    if _knowledge_cache:
+        return _knowledge_cache
+    
+    # 从配置读取路径，默认 config/knowledge.yml
+    config = get_config()
+    knowledge_path_str = config.get("paths.knowledge_config", "config/knowledge.yml")
+    knowledge_path = Path(__file__).resolve().parent.parent / knowledge_path_str
+    
+    if not knowledge_path.exists():
+        # 不存在时返回空字典，analyzer 会降级为无知识注入
+        return {}
+    
+    with open(knowledge_path, "r", encoding="utf-8") as f:
+        _knowledge_cache = yaml.safe_load(f) or {}
+    
+    return _knowledge_cache

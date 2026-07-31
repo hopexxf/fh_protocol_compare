@@ -1,0 +1,151 @@
+# FH Protocol Compare — 业务知识配置
+# 用于 LLM 分析时的知识注入
+# 最后更新：2026-08-01
+
+# ============================================================
+# 模块 1：标准组织背景（scope-diff 判断核心）
+# ============================================================
+org_background: |
+  ## 标准组织背景
+  
+  - **O-RAN Alliance**：开放 RAN 架构，定义开放式前传接口，覆盖 CU/DU/RU 分离架构，
+    强调互操作性与多厂商集成。规范体系完整，包含 U-plane/C-plane/S-plane/M-plane。
+    
+  - **ASTRI（应用科技研究院）**：香港科研机构，聚焦 5G 前传技术验证与原型实现，
+    规范范围窄于 O-RAN，可能省略部分管理平面、测试规范、扩展特性。
+  
+  **判断提示**：
+  - O-RAN 有而 ASTRI 无 → 优先考虑 scope-diff（范围差异），而非 feature-removed
+  - 除非明确是核心功能（如 U-plane 基本流程）被移除，才判为 feature-removed
+
+# ============================================================
+# 模块 2：协议分层与职责（impact 判断核心）
+# ============================================================
+layer_responsibility: |
+  ## 协议分层与职责
+  
+  前传接口位于 DU-RU 之间，主要涉及：
+  
+  | 平面 | 职责 | 典型内容 |
+  |------|------|----------|
+  | **U-plane** | 用户数据传输 | I/Q 采样、AxC 映射、压缩/解压缩 |
+  | **C-plane** | 控制信令 | 下行调度、上行授权、HARQ 反馈、功率控制 |
+  | **S-plane** | 同步 | PTP/同步以太网、时间戳 |
+  | **M-plane** | 管理 | 配置、状态监控、故障告警 |
+  
+  **影响评估提示**：
+  - U-plane 变更 → 影响数据吞吐与延迟，通常"高"影响
+  - C-plane 变更 → 影响调度效率与资源分配，"高"或"中"
+  - S-plane 变更 → 影响同步精度，可能导致系统级故障，"高"
+  - M-plane 变更 → 影响运维便利性，通常"低"或"中"
+
+# ============================================================
+# 模块 5：典型差异模式（动态提示）
+# 基于 O-RAN 官方文档提炼的 20 个关键概念
+# ============================================================
+diff_patterns:
+  # ------------------ 高优先级（核心架构/流程）------------------
+  
+  "C-plane Section Type":
+    hint: "C-plane Section Type（0/1/3/5/6）定义调度结构，变更影响控制信令解析，常见影响：高"
+    keywords: ["section type", "sectionType", "Section Type 0", "Section Type 1", "Section Type 3", "Section Type 5", "Section Type 6"]
+    priority: 10
+  
+  "eCPRI Header":
+    hint: "eCPRI 头结构（MessageType/PC_RTC/SeqId）变更属于设计层面变更，常见影响：高"
+    keywords: ["eCPRI", "MessageType", "PC_RTC", "eCPRI header", "ecpri_msg"]
+    priority: 10
+  
+  "PRACH":
+    hint: "PRACH（随机接入）相关参数变更影响初始接入与切换，常见影响：高"
+    keywords: ["PRACH", "preamble", "random access", "RACH", "timeOffset"]
+    priority: 10
+  
+  "S-plane 同步":
+    hint: "同步机制（PTP/G.8275.1/SyncE）变更影响系统时钟精度，可能导致系统级故障，常见影响：高"
+    keywords: ["PTP", "G.8275", "SyncE", "synchronization", "S-plane", "clock", "timestamp", "timing advance"]
+    priority: 10
+  
+  "HARQ":
+    hint: "HARQ（混合自动重传）相关参数变更影响重传机制与吞吐，常见影响：高"
+    keywords: ["HARQ", "ACK", "NACK", "retransmission", "redundancy version", "RV"]
+    priority: 9
+  
+  "TDD 配置":
+    hint: "TDD 时隙配置（DD SUU 等）变更影响上下行时序，常见影响：高"
+    keywords: ["TDD", "slot configuration", "DD SUU", "uplink-downlink", "slot format"]
+    priority: 9
+  
+  "FFT Size":
+    hint: "FFT Size（512/1024/2048/4096）变更影响频域处理逻辑，常见影响：高"
+    keywords: ["FFT", "FFT size", "IFFT", "FFT点数"]
+    priority: 8
+  
+  "Sub-carrier Spacing":
+    hint: "子载波间隔（15/30/120kHz）变更影响时频资源映射，常见影响：高"
+    keywords: ["sub-carrier spacing", "SCS", "subcarrier", "kHz", "numerology"]
+    priority: 8
+  
+  # ------------------ 中优先级（功能实现）------------------
+  
+  "Beamforming":
+    hint: "波束赋形（Beam Index/BF Weights）变更影响多天线性能与覆盖，常见影响：中或高"
+    keywords: ["beamforming", "beam index", "BF weight", "precoding", "预编码", "beam"]
+    priority: 7
+  
+  "AxC 映射":
+    hint: "AxC（Antenna-Carrier）容器映射变更影响 I/Q 数据封装与传输，常见影响：中"
+    keywords: ["AxC", "antenna-carrier", "eAxC", "AxC container", "AxC_ID"]
+    priority: 7
+  
+  "U-plane IQ Format":
+    hint: "U-plane I/Q 数据格式变更影响用户面数据处理，常见影响：中"
+    keywords: ["IQ format", "I/Q", "IQ sample", "data section", "UDcomp", "udCompHdr"]
+    priority: 7
+  
+  "Compression Algorithm":
+    hint: "压缩算法（BFP/μ-law/Modulation Compression）变更影响带宽与信号质量，常见影响：中"
+    keywords: ["compression", "BFP", "block floating point", "μ-law", "mu-law", "modulation compression", "beamspace compression"]
+    priority: 6
+  
+  "Fragmentation":
+    hint: "应用层分片（Application Fragmentation）变更影响大包传输与重组，常见影响：中"
+    keywords: ["fragmentation", "fragment", "分段", "MTU"]
+    priority: 6
+  
+  "QoS":
+    hint: "QoS（服务质量）配置变更影响前传流量优先级与延迟，常见影响：中"
+    keywords: ["QoS", "Quality of Service", "prioritization", "VLAN", "DSCP"]
+    priority: 5
+  
+  "Channel Bandwidth":
+    hint: "信道带宽（5/10/20/100MHz）变更影响射频参数与资源分配，常见影响：中"
+    keywords: ["bandwidth", "channel bandwidth", "MHz", "频宽"]
+    priority: 5
+  
+  # ------------------ 低优先级（辅助功能/测试）------------------
+  
+  "RU Category":
+    hint: "RU Category（CAT-A/CAT-B）差异影响 RU 功能定位，常见影响：低或中"
+    keywords: ["CAT-A", "CAT-B", "RU category", "Category A", "Category B"]
+    priority: 4
+  
+  "Component Carrier":
+    hint: "载波分量（CC）数量变更影响多载波聚合能力，常见影响：低或中"
+    keywords: ["CC", "Component Carrier", "载波", "carrier"]
+    priority: 3
+  
+  "Test Specification":
+    hint: "测试规范差异通常属于范围差异（scope-diff），不影响实现，常见影响：低"
+    keywords: ["test", "conformance", "验证", "测试", "testing"]
+    priority: 2
+  
+  "M-plane Management":
+    hint: "M-plane 管理/运维功能变更影响配置与监控便利性，常见影响：低"
+    keywords: ["M-plane", "management", "NETCONF", "配置", "监控", "告警"]
+    priority: 2
+  
+  "Energy Saving":
+    hint: "节能特性（Transmission Blanking）变更影响功耗优化，常见影响：低"
+    keywords: ["energy saving", "transmission blanking", "节能", "power saving"]
+    priority: 1

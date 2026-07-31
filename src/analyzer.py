@@ -132,6 +132,7 @@ ANALYZE_DIFF_USER = """## 任务
 ## 原始 Diff 摘要
 
 {diff_summary}
+{dynamic_hint}
 
 ## 要求
 
@@ -244,6 +245,105 @@ ANALYZE_REMOVED_USER = """## 任务
 """
 
 # ---------------------------------------------------------------------------
+# 动态知识注入
+# ---------------------------------------------------------------------------
+
+def _build_system_prompt() -> str:
+    """
+    构建 SYSTEM prompt，注入核心业务知识（模块 1 + 模块 2）。
+    
+    从 config/knowledge.yml 加载 org_background 和 layer_responsibility。
+    如文件不存在，降级为原始 ANALYZE_DIFF_SYSTEM。
+    """
+    from src.config_loader import get_knowledge
+    
+    knowledge = get_knowledge()
+    
+    if not knowledge:
+        # 配置文件不存在，使用原始 prompt
+        return ANALYZE_DIFF_SYSTEM
+    
+    parts = [
+        "你是一位专业的 5G NR 前传（Front Haul）协议工程师，擅长分析 O-RAN 和 ASTRI 等不同标准组织的协议文档。",
+        "",
+        knowledge.get("org_background", ""),
+        "",
+        knowledge.get("layer_responsibility", ""),
+        "",
+        "你的任务：判断章节差异的类型与影响，输出严格 JSON，不要输出 JSON 以外的任何内容。",
+    ]
+    
+    return "\n".join([p for p in parts if p])
+
+
+def _build_removed_system_prompt() -> str:
+    """
+    构建 Base 独有章节的 SYSTEM prompt，仅注入模块 1（标准组织背景）。
+    
+    这是 scope-diff 判断的核心依据。
+    """
+    from src.config_loader import get_knowledge
+    
+    knowledge = get_knowledge()
+    
+    if not knowledge:
+        return ANALYZE_REMOVED_SYSTEM
+    
+    parts = [
+        "你是一位专业的 5G NR 前传协议工程师，擅长分析 O-RAN 和 ASTRI 等不同标准组织的协议文档。",
+        "",
+        knowledge.get("org_background", ""),
+        "",
+        "你的任务：判断章节差异的类型与影响，输出严格 JSON，不要输出 JSON 以外的任何内容。",
+    ]
+    
+    return "\n".join([p for p in parts if p])
+
+
+def _get_dynamic_hint(content: str, max_hints: int = 3) -> str:
+    """
+    根据章节内容匹配动态提示（模块 5），按优先级排序。
+    
+    Args:
+        content: 章节 title + content 的组合文本
+        max_hints: 最多返回几条提示
+    
+    Returns:
+        动态提示字符串（如 "**动态提示**：\n- xxx\n- xxx"）或空字符串
+    """
+    from src.config_loader import get_knowledge
+    
+    knowledge = get_knowledge()
+    patterns = knowledge.get("diff_patterns", {})
+    
+    if not patterns:
+        return ""
+    
+    matched = []
+    content_lower = content.lower()
+    
+    for pattern_name, pattern_data in patterns.items():
+        keywords = pattern_data.get("keywords", [])
+        # 任一关键词匹配即触发
+        if any(kw.lower() in content_lower for kw in keywords):
+            matched.append({
+                "name": pattern_name,
+                "hint": pattern_data.get("hint", ""),
+                "priority": pattern_data.get("priority", 0),
+            })
+    
+    if not matched:
+        return ""
+    
+    # 按优先级降序排序，取前 N 个
+    matched.sort(key=lambda x: x["priority"], reverse=True)
+    top_matches = matched[:max_hints]
+    
+    hints = [f"- {m['hint']}" for m in top_matches]
+    return "\n**动态提示**：\n" + "\n".join(hints)
+
+
+# ---------------------------------------------------------------------------
 # 内部工具
 # ---------------------------------------------------------------------------
 
@@ -253,8 +353,17 @@ def _build_messages(diff_item: dict) -> list[dict]:
     compare_id = diff_item.get("compare_section_id")
 
     if base_id and compare_id:
+        # 对齐章节：注入动态提示
+        combined_content = (
+            diff_item.get("base_section_title", "") + " " +
+            diff_item.get("base_content", "") + " " +
+            diff_item.get("compare_section_title", "") + " " +
+            diff_item.get("compare_content", "")
+        )
+        dynamic_hint = _get_dynamic_hint(combined_content)
+        
         return [
-            {"role": "system", "content": ANALYZE_DIFF_SYSTEM},
+            {"role": "system", "content": _build_system_prompt()},
             {
                 "role": "user",
                 "content": ANALYZE_DIFF_USER.format(
@@ -265,6 +374,7 @@ def _build_messages(diff_item: dict) -> list[dict]:
                     base_content=diff_item.get("base_content", "（无内容）"),
                     compare_content=diff_item.get("compare_content", "（无内容）"),
                     diff_summary=diff_item.get("diff_summary", ""),
+                    dynamic_hint=dynamic_hint,
                 ),
             },
         ]
@@ -282,8 +392,9 @@ def _build_messages(diff_item: dict) -> list[dict]:
         ]
     else:
         # Base 独有章节：判为 feature-removed 还是 scope-diff（范围差异）
+        # 注入标准组织背景知识（模块 1）
         return [
-            {"role": "system", "content": ANALYZE_REMOVED_SYSTEM},
+            {"role": "system", "content": _build_removed_system_prompt()},
             {
                 "role": "user",
                 "content": ANALYZE_REMOVED_USER.format(

@@ -49,6 +49,7 @@ paths:
   output_dir: "versions"             # 比对结果归档目录
   specs_dir: "specs"                 # 结构化提取产物目录
   log_dir: "logs"                   # 日志目录
+  knowledge_config: "config/knowledge.yml"  # 业务知识配置文件
 
 # 日志配置
 logging:
