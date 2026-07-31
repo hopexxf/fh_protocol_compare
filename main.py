@@ -97,8 +97,8 @@ def run_comparison(
 
     # ---- Step 1: 解析文档 ----
     logger.info("[1/5] 解析文档...")
-    base_md, _ = parse_document(str(base_path))
-    compare_md, _ = parse_document(str(compare_path))
+    base_md, _, _ = parse_document(str(base_path))
+    compare_md, _, _ = parse_document(str(compare_path))
     logger.info(f"[1/5] 解析完成：Base {len(base_md)} chars，Compare {len(compare_md)} chars")
 
     # ---- Step 2: 章节对齐 ----
