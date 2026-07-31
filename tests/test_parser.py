@@ -48,6 +48,7 @@ def _skip(msg):
 # ------------------------------------------------------------------
 
 class TestPdfplumberExtract:
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_extract_pages_astri(self):
         pages = extract_text_pdfplumber(ASTRI_PDF)
@@ -59,6 +60,7 @@ class TestPdfplumberExtract:
         total_chars = sum(len(p.get("text", "")) for p in pages)
         assert total_chars > 1000, f"总字符数应 > 1000，实际 {total_chars}"
 
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_extract_pages_returns_list(self):
         pages = extract_text_pdfplumber(ASTRI_PDF)
@@ -70,6 +72,7 @@ class TestPdfplumberExtract:
 # ------------------------------------------------------------------
 
 class TestPdfplumberLarge:
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ORAN_EXISTS, reason="O-RAN PDF 不存在")
     def test_extract_pages_oaran(self):
         pages = extract_text_pdfplumber(ORAN_PDF)
@@ -82,6 +85,7 @@ class TestPdfplumberLarge:
 # ------------------------------------------------------------------
 
 class TestMarkdownStructure:
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_structured_markdown_has_headers(self):
         pages = extract_text_pdfplumber(ASTRI_PDF)
@@ -89,18 +93,21 @@ class TestMarkdownStructure:
         assert "# " in md
         assert md.count("\n") > 10
 
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_structured_markdown_has_page_hints(self):
         pages = extract_text_pdfplumber(ASTRI_PDF)
         md = to_structured_markdown(pages)
         assert "<!-- page=" in md
 
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_structured_markdown_length(self):
         pages = extract_text_pdfplumber(ASTRI_PDF)
         md = to_structured_markdown(pages)
         assert len(md) > 5000, f"Markdown 长度应 > 5000，实际 {len(md)}"
 
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_structured_markdown_no_excessive_whitespace(self):
         pages = extract_text_pdfplumber(ASTRI_PDF)
@@ -113,6 +120,7 @@ class TestMarkdownStructure:
 # ------------------------------------------------------------------
 
 class TestPdfminerFallback:
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_extract_pages_miner(self):
         pages = extract_text_pdfminer(ASTRI_PDF)
@@ -128,6 +136,7 @@ class TestPdfminerFallback:
 # ------------------------------------------------------------------
 
 class TestAutoDetectParser:
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_parse_pdf_returns_tuple(self):
         """parse_pdf 返回 (markdown: str, raw_pages: list[dict], tables: list[dict])"""
@@ -139,6 +148,7 @@ class TestAutoDetectParser:
         # 每页应有 page_num 和 text
         assert all("page_num" in p and "text" in p for p in pages)
 
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_parse_pdf_markdown_not_empty(self):
         """Markdown 输出非空"""
@@ -146,6 +156,7 @@ class TestAutoDetectParser:
         assert len(md) > 1000, f"Markdown 应有 > 1000 字符，实际 {len(md)}"
         assert "<!-- page=" in md, "应包含页码标记"
 
+    @pytest.mark.slow
     @pytest.mark.skipif(not _ASTRI_EXISTS, reason="ASTRI PDF 不存在")
     def test_parse_pdf_page_count(self):
         """页数与原始 PDF 匹配（ASTRI ~27 页）"""
