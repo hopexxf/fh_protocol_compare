@@ -235,6 +235,213 @@ def _tables_to_markdown(tables: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: 上下文保留（表格插回章节）
+# ---------------------------------------------------------------------------
+
+def _parse_sections_from_markdown(md: str) -> list[dict]:
+    """
+    从 Markdown 解析章节信息（基于 <!-- page=N --> 标记）。
+
+    Returns:
+        [
+            {
+                "section_id": "4.1.2",
+                "title": "Message Structure",
+                "level": 3,
+                "start_line": 123,
+                "end_line": 200,
+                "page_num": 15,
+            },
+            ...
+        ]
+    """
+    import re
+
+    sections = []
+    lines = md.split("\n")
+
+    # 章节标题正则
+    section_pattern = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+<!-- page=(\d+) -->)?$")
+    page_pattern = re.compile(r"<!-- page=(\d+) -->")
+
+    current_section = None
+    current_page = None
+
+    for i, line in enumerate(lines):
+        # 检测页码标记
+        page_match = page_pattern.search(line)
+        if page_match:
+            current_page = int(page_match.group(1))
+
+        # 检测章节标题
+        section_match = section_pattern.match(line)
+        if section_match:
+            # 保存上一个章节
+            if current_section:
+                current_section["end_line"] = i - 1
+                sections.append(current_section)
+
+            # 开始新章节
+            level = len(section_match.group(1))
+            title = section_match.group(2).strip()
+
+            # 提取章节编号
+            id_match = re.match(r"^([\d.]+|Annex\s+[A-Z]|[A-Z])", title)
+            section_id = id_match.group(1) if id_match else f"h{level}"
+
+            current_section = {
+                "section_id": section_id,
+                "title": title,
+                "level": level,
+                "start_line": i,
+                "end_line": None,
+                "page_num": current_page,
+            }
+
+    # 最后一个章节
+    if current_section:
+        current_section["end_line"] = len(lines) - 1
+        sections.append(current_section)
+
+    logger.debug(f"[Phase2] 解析到 {len(sections)} 个章节")
+    return sections
+
+
+def _associate_tables_with_sections(tables: list[dict], sections: list[dict], md: str) -> list[dict]:
+    """
+    将表格关联到对应章节。
+
+    关联策略：
+    1. 页码匹配：表格所在页 = 章节所在页
+    2. 文本匹配（辅助）：表格内容与章节文本相似度
+
+    Returns:
+        更新后的表格列表，每个表格新增 section_id/section_title/context_before
+    """
+    import re
+
+    lines = md.split("\n")
+
+    for tbl in tables:
+        page = tbl["page_num"]
+
+        # 策略 1：页码匹配
+        matched_sections = [s for s in sections if s["page_num"] == page]
+
+        if len(matched_sections) == 1:
+            # 唯一匹配
+            section = matched_sections[0]
+        elif len(matched_sections) > 1:
+            # 多个匹配，选最后一个（表格通常在章节末尾）
+            section = matched_sections[-1]
+        else:
+            # 无匹配，找最近的章节
+            section = _find_best_section_by_text(tbl, sections, lines)
+
+        if section:
+            tbl["section_id"] = section["section_id"]
+            tbl["section_title"] = section["title"]
+            tbl["section_start_line"] = section["start_line"]
+            tbl["section_end_line"] = section["end_line"]
+
+            # 提取上下文（表格前 50 字符）
+            if "bbox" in tbl and tbl["bbox"]:
+                # 依赖 PDF 坐标，暂不实现
+                tbl["context_before"] = ""
+            else:
+                tbl["context_before"] = ""
+        else:
+            # 无法关联
+            tbl["section_id"] = "unknown"
+            tbl["section_title"] = ""
+            tbl["context_before"] = ""
+
+    logger.info(f"[Phase2] 表格关联完成，{len([t for t in tables if t.get('section_id') != 'unknown'])}/{len(tables)} 成功")
+    return tables
+
+
+def _find_best_section_by_text(tbl: dict, sections: list[dict], lines: list[str]) -> dict:
+    """
+    文本匹配辅助：根据表格内容找最相似章节。
+
+    简化实现：返回页码最接近的章节。
+    """
+    page = tbl["page_num"]
+
+    # 找页码最接近的章节
+    closest = None
+    min_diff = float("inf")
+
+    for section in sections:
+        diff = abs(section["page_num"] - page) if section.get("page_num") else float("inf")
+        if diff < min_diff:
+            min_diff = diff
+            closest = section
+
+    return closest
+
+
+def _insert_tables_into_sections(md: str, tables: list[dict]) -> str:
+    """
+    将表格插回对应章节末尾。
+
+    插入策略：从后向前插入，避免行号偏移。
+
+    Returns:
+        更新后的 Markdown
+    """
+    lines = md.split("\n")
+
+    # 按章节分组
+    section_tables = {}
+    for tbl in tables:
+        section_id = tbl.get("section_id", "unknown")
+        if section_id not in section_tables:
+            section_tables[section_id] = []
+        section_tables[section_id].append(tbl)
+
+    # 从后向前插入
+    insertions = []
+
+    for section_id, tbls in section_tables.items():
+        if section_id == "unknown":
+            continue
+
+        # 找到章节末尾
+        first_tbl = tbls[0]
+        if "section_end_line" not in first_tbl:
+            continue
+
+        end_line = first_tbl["section_end_line"]
+
+        # 生成表格 Markdown
+        table_md_parts = []
+        for tbl in tbls:
+            caption = f"表格 {tbl.get('section_title', '')}（P{tbl['page_num']}）"
+            if "accuracy" in tbl:
+                caption += f"，准确度 {tbl['accuracy']:.1f}%"
+
+            table_md_parts.append(f"\n\n**{caption}**\n\n")
+            table_md_parts.append(_table_to_markdown(tbl["table"]))
+            table_md_parts.append(f"\n<!-- TABLE: page={tbl['page_num']} index={tbl['table_index']} -->\n")
+
+        table_md = "".join(table_md_parts)
+        insertions.append((end_line, table_md))
+
+    # 按行号降序排序（从后向前插入）
+    insertions.sort(key=lambda x: x[0], reverse=True)
+
+    # 执行插入
+    for line_num, table_md in insertions:
+        lines.insert(line_num + 1, table_md)
+
+    result = "\n".join(lines)
+    logger.info(f"[Phase2] 表格插入完成，{len(insertions)} 个章节包含表格")
+
+    return result
+
+
 def extract_text_pdfminer(pdf_path: str) -> list[dict]:
     """
     使用 pdfminer.six 提取 PDF 文本（备选方案，用于复杂布局）。
@@ -376,12 +583,14 @@ def parse_pdf(
     if extract_tables:
         tables = _extract_tables_with_config(pdf_path, md, pages)
 
-        # 4. 处理表格（追加到 Markdown）
+        # 4. 处理表格
         if tables:
             if insert_tables_to_sections:
-                # Phase 2：插回章节（待实现）
-                logger.warning("[PDF] insert_tables_to_sections 尚未实现，表格将追加到文档末尾")
-                md += _tables_to_markdown(tables)
+                # Phase 2：插回章节
+                logger.info("[PDF] 启用 Phase 2：表格插回章节")
+                sections = _parse_sections_from_markdown(md)
+                tables = _associate_tables_with_sections(tables, sections, md)
+                md = _insert_tables_into_sections(md, tables)
             else:
                 # Phase 1：追加到文档末尾
                 md += _tables_to_markdown(tables)
