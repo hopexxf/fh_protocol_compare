@@ -24,6 +24,7 @@ from src.analyzer import (
     summarize_all,
     ANALYZE_DIFF_SYSTEM,
     ANALYZE_DIFF_USER,
+    ANALYZE_REMOVED_USER,
 )
 
 
@@ -186,18 +187,41 @@ class TestAnalyzeCompareOnly:
 # ------------------------------------------------------------------
 
 class TestAnalyzeBaseOnly:
-    def test_base_only_returns_feature_removed(self):
-        mock_client = MagicMock()  # 不应被调用
+    def test_base_only_calls_llm(self):
+        mock_client = _make_mock_client([_json_response([{
+            "type": "scope-diff",
+            "impact": "低",
+            "base_quote": "Control messages are structured as follows.",
+            "compare_quote": "",
+            "description": "该主题为 O-RAN 特有，ASTRI 文档不在同一范围内。",
+            "workload_hint": "无需实现，仅作范围说明。",
+        }], "Base 独有，判为范围差异")])
         result = analyze_diff_item(DIFF_ITEM_BASE_ONLY, llm_client=mock_client)
 
+        assert mock_client.chat.called
         assert "llm_result" in result
-        assert result["llm_result"]["diffs"][0]["type"] == "feature-removed"
-        assert not mock_client.chat.called
+        assert result["llm_result"]["diffs"][0]["type"] == "scope-diff"
 
-    def test_base_only_impact_medium(self):
-        mock_client = MagicMock()
+    def test_base_only_feature_removed_preserved(self):
+        mock_client = _make_mock_client([_json_response([{
+            "type": "feature-removed",
+            "impact": "中",
+            "base_quote": "Control messages are structured as follows.",
+            "compare_quote": "",
+            "description": "Compare 在同等范围内移除该能力。",
+            "workload_hint": "需确认替代实现。",
+        }], "Base 独有，判为功能删除")])
         result = analyze_diff_item(DIFF_ITEM_BASE_ONLY, llm_client=mock_client)
+        assert result["llm_result"]["diffs"][0]["type"] == "feature-removed"
         assert result["llm_result"]["diffs"][0]["impact"] == "中"
+
+    def test_base_only_fallback_on_llm_error(self):
+        # LLM 不可用时降级为 feature-removed，且不抛异常
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = RuntimeError("LLM 网络错误")
+        result = analyze_diff_item(DIFF_ITEM_BASE_ONLY, llm_client=mock_client)
+        assert result["llm_result"]["diffs"][0]["type"] == "feature-removed"
+        assert "LLM 兜底" in result["llm_result"]["summary"]
 
 
 # ------------------------------------------------------------------
@@ -255,7 +279,7 @@ class TestAnalyzeBatch:
         diffs = [DIFF_ITEM_ALIGNED, DIFF_ITEM_COMPARE_ONLY, DIFF_ITEM_BASE_ONLY]
         results = analyze_diff_batch(diffs, llm_client=mock_client)
 
-        assert mock_client.chat.call_count == 2  # Base 独有不调用 LLM
+        assert mock_client.chat.call_count == 3  # 三条均调用 LLM（含 Base 独有）
         # 三个都应有结果
         assert all("llm_result" in r or "llm_added" in r for r in results)
 
@@ -415,3 +439,7 @@ class TestPromptTemplates:
 
     def test_diff_user_prompt_asks_chinese_output(self):
         assert "中文" in ANALYZE_DIFF_USER
+
+    def test_removed_user_prompt_mentions_scope_diff(self):
+        assert "scope-diff" in ANALYZE_REMOVED_USER
+        assert "feature-removed" in ANALYZE_REMOVED_USER

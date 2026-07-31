@@ -1,16 +1,17 @@
 """
 LLM 客户端模块
 
-多端点降级链：
-  1. OpenClaw 19000 proxy  (modelroute 模型)
-  2. OpenClaw 28789 gateway (openclaw 模型)
-  3. 直连 API Key          (用户配置的 base_url + api_key)
+降级链（当前环境实测）：
+  1. OpenClaw Gateway (localhost:61791) — Bearer Token，模型 openclaw，流式返回
+  2. 直连 API Key（用户提供 base_url + api_key）
 
 参考 arxiv_agent LLMClient 设计。
 """
 
+import json
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -18,20 +19,70 @@ import yaml
 logger = logging.getLogger("fh_protocol_compare.llm")
 
 
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _load_gateway_token() -> Optional[str]:
+    """从 openclaw.json 读取 gateway Bearer token"""
+    cfg_path = Path.home() / ".qclaw" / "openclaw.json"
+    if not cfg_path.exists():
+        return None
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("gateway", {}).get("auth", {}).get("token", "")
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# LLMClient
+# ---------------------------------------------------------------------------
+
 class LLMClient:
     def __init__(self, config_path: Optional[str] = None):
         self.config = self._load_config(config_path)
         self._endpoints = self._build_endpoints()
-        self._current = 0  # 当前使用的端点索引
+        self._current = 0
         self._consecutive_failures = 0
-        self._FORBIDDEN_THRESHOLD = 2  # 连续 403 后降级
+        self._FORBIDDEN_THRESHOLD = 2
+        self._session_label: Optional[str] = None  # 当前会话来源标识（用于清理）
+
+    def set_session_label(self, label: str) -> None:
+        """设置会话来源标识，LLM 调用时会作为 user 字段传入，便于定位和清理。"""
+        self._session_label = label
+
+    def cleanup_sessions(self) -> bool:
+        """
+        清理 OpenClaw Gateway 中由本项目创建的所有会话。
+        调用 openclaw sessions cleanup --enforce 应用维护策略。
+        返回 True 表示清理命令执行成功（不代表有会话被删除）。
+        """
+        import subprocess, shutil
+        oc = shutil.which("openclaw")
+        if not oc:
+            logger.warning("[LLM] openclaw CLI 未找到，跳过会话清理")
+            return False
+        try:
+            result = subprocess.run(
+                [oc, "sessions", "cleanup", "--enforce"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info("[LLM] 会话清理完成")
+                return True
+            else:
+                logger.warning(f"[LLM] 会话清理失败: {result.stderr.strip()}")
+                return False
+        except Exception as e:
+            logger.warning(f"[LLM] 会话清理异常: {e}")
+            return False
 
     def _load_config(self, config_path: Optional[str]) -> dict:
         if config_path:
             with open(config_path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
-        # 读取项目配置
-        from pathlib import Path
         p = Path(__file__).resolve().parent.parent / "config" / "settings.yml"
         if p.exists():
             with open(p, "r", encoding="utf-8") as f:
@@ -39,28 +90,22 @@ class LLMClient:
         return {}
 
     def _build_endpoints(self) -> list[dict]:
-        """构建降级链端点列表"""
         endpoints = []
 
-        # 端点 1：OpenClaw 19000 proxy（优先）
-        endpoints.append({
-            "name": "19000_proxy",
-            "base_url": "http://localhost:19000/v1",
-            "model": "modelroute",        # placeholder，路由层自己认模型
-            "api_key": "dummy",
-            "header_auth": False,
-        })
+        # 端点 1：OpenClaw Gateway（从 openclaw.json 读 Bearer token）
+        gw_token = _load_gateway_token()
+        if gw_token:
+            # 优先用 settings.yml 中的 gateway.port，否则默认 61791
+            gw_port = self.config.get("llm", {}).get("gateway_port", 61791)
+            endpoints.append({
+                "name": "gateway",
+                "base_url": f"http://localhost:{gw_port}/v1",
+                "model": "openclaw",
+                "api_key": gw_token,
+                "header_auth": True,
+            })
 
-        # 端点 2：OpenClaw 28789 gateway
-        endpoints.append({
-            "name": "28789_gateway",
-            "base_url": "http://localhost:28789/v1",
-            "model": "openchat/oftary",
-            "api_key": "dummy",
-            "header_auth": False,
-        })
-
-        # 端点 3：直连 API Key（用户提供）
+        # 端点 2：直连 API Key（用户提供）
         api_key = self.config.get("llm", {}).get("api_key", "")
         base_url = self.config.get("llm", {}).get("base_url", "https://api.openai.com/v1")
         model = self.config.get("llm", {}).get("model", "gpt-3.5-turbo")
@@ -73,13 +118,14 @@ class LLMClient:
                 "header_auth": True,
             })
 
+        if not endpoints:
+            raise RuntimeError("未配置任何 LLM 端点，请设置 llm.api_key 或确保 OpenClaw Gateway 可用")
         return endpoints
 
     def _get_current_endpoint(self) -> dict:
         return self._endpoints[self._current]
 
     def _downgrade(self) -> bool:
-        """尝试降级到下一个端点，返回是否还有可用端点"""
         if self._current < len(self._endpoints) - 1:
             self._current += 1
             self._consecutive_failures = 0
@@ -89,10 +135,12 @@ class LLMClient:
         logger.error("所有 LLM 端点均不可用")
         return False
 
-    def _call(self, messages: list[dict], **kwargs) -> dict:
+    def _call(self, messages: list[dict], stream: bool = True, **kwargs) -> dict:
         """
-        调用当前端点的 chat completion 接口。
-        返回 OpenAI-compatible response dict。
+        调用当前端点。
+        - stream=True（默认）：使用流式 SSE 读取，返回 {"text": "...", "done": True}
+        - stream=False：同步 JSON 响应，返回 {"text": "...", "done": True}
+        返回值统一格式，方便调用方处理。
         """
         import requests
 
@@ -106,12 +154,45 @@ class LLMClient:
             "model": ep["model"],
             "messages": messages,
             "temperature": kwargs.get("temperature", 0.3),
+            "stream": stream,
         }
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
+        if self._session_label:
+            payload["user"] = self._session_label
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=kwargs.get("timeout", 120))
-        return resp
+        timeout = kwargs.get("timeout", 120)
+        resp = requests.post(url, headers=headers, json=payload, stream=stream, timeout=timeout)
+
+        if not stream:
+            if resp.status_code != 200:
+                return {"error": resp.status_code, "text": resp.text[:200], "done": True}
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            return {"text": text, "done": True}
+
+        # 流式：手动解析 SSE
+        return self._parse_sse_stream(resp)
+
+    def _parse_sse_stream(self, resp) -> dict:
+        """
+        手动解析 SSE 流式响应，累积 delta.content 后返回完整文本。
+        """
+        content_parts = []
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+                delta = obj.get("choices", [{}])[0].get("delta", {})
+                if delta.get("content"):
+                    content_parts.append(delta["content"])
+            except json.JSONDecodeError:
+                continue
+        return {"text": "".join(content_parts), "done": True}
 
     def chat(
         self,
@@ -123,12 +204,6 @@ class LLMClient:
     ) -> str:
         """
         发送对话请求，自动处理降级和重试。
-
-        Args:
-            messages:  [{"role": "system"|"user"|"assistant", "content": "..."}]
-            temperature: 采样温度
-            max_tokens: 最大返回 token 数
-            timeout: 请求超时（秒）
 
         Returns:
             LLM 输出的文本内容
@@ -144,38 +219,28 @@ class LLMClient:
             ep = self._get_current_endpoint()
             logger.debug(f"[LLM] 调用 {ep['name']}，attempt={attempt}")
 
+            # 判断端点是否支持流式
+            is_gateway = ep["name"] == "gateway"
+            use_stream = is_gateway  # gateway 只支持流式
+
             try:
-                resp = self._call(
+                result = self._call(
                     messages,
+                    stream=use_stream,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=timeout,
                 )
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self._consecutive_failures = 0
-                    return data["choices"][0]["message"]["content"].strip()
-
-                elif resp.status_code == 403:
-                    self._consecutive_failures += 1
-                    logger.warning(f"[LLM] {ep['name']} 返回 403（{self._consecutive_failures}次）")
-                    if self._consecutive_failures >= self._FORBIDDEN_THRESHOLD:
-                        if not self._downgrade():
-                            raise RuntimeError("所有 LLM 端点均已拒绝访问")
-                    continue
-
-                elif resp.status_code == 429:
-                    wait = float(resp.headers.get("Retry-After", 30))
-                    logger.warning(f"[LLM] {ep['name']} 返回 429，等待 {wait}s")
-                    time.sleep(wait)
-                    continue
-
-                else:
-                    logger.warning(f"[LLM] {ep['name']} 返回 {resp.status_code}: {resp.text[:200]}")
+                if "error" in result:
+                    code = result["error"]
+                    logger.warning(f"[LLM] {ep['name']} 返回 {code}: {result['text']}")
                     if not self._downgrade():
-                        raise RuntimeError(f"LLM 请求失败: {resp.status_code}")
+                        raise RuntimeError(f"LLM 请求失败: {code}")
                     continue
+
+                self._consecutive_failures = 0
+                return result["text"]
 
             except Exception as e:
                 logger.warning(f"[LLM] {ep['name']} 异常: {e}")
@@ -195,11 +260,8 @@ class LLMClient:
     ) -> dict:
         """
         带结构化输出的 chat 调用。
-        通过 system prompt 要求 LLM 输出 JSON，
-        解析后返回 dict（校验由调用方负责）。
+        通过 system prompt 要求 LLM 输出 JSON，解析后返回 dict。
         """
-        import json
-
         schema_str = json.dumps(schema, ensure_ascii=False)
         prompt_extra = (
             f"\n\n请严格按以下 JSON Schema 输出，"
@@ -212,7 +274,6 @@ class LLMClient:
             enhanced.insert(0, {"role": "system", "content": prompt_extra})
 
         raw = self.chat(enhanced, temperature=temperature, max_tokens=max_tokens)
-        # 提取 JSON 块
         import re
         m = re.search(r"\{[\s\S]*\}", raw)
         if m:
@@ -222,6 +283,7 @@ class LLMClient:
 
 # 懒加载单例
 _llm_client: Optional[LLMClient] = None
+
 
 def get_llm_client() -> LLMClient:
     global _llm_client

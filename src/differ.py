@@ -218,6 +218,8 @@ def diff_aligned_sections(
             "diff_snippet": snippet,
             "base_content": base_text[:500],
             "compare_content": compare_text[:500],
+            "base_page": base_sec.get("page_hint", ""),
+            "compare_page": compare_sec.get("page_hint", ""),
         })
 
     # Base 独有章节
@@ -236,6 +238,7 @@ def diff_aligned_sections(
             "diff_snippet": "",
             "base_content": base_sec.get("content", "")[:500],
             "compare_content": "",
+            "base_page": base_sec.get("page_hint", ""),
         })
 
     # Compare 独有章节
@@ -254,6 +257,7 @@ def diff_aligned_sections(
             "diff_snippet": "",
             "base_content": "",
             "compare_content": compare_sec.get("content", "")[:500],
+            "compare_page": compare_sec.get("page_hint", ""),
         })
 
     return results

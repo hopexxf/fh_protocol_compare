@@ -91,6 +91,16 @@ _{section_summary}_
 # 报告生成
 # ---------------------------------------------------------------------------
 
+def _fmt_loc(doc_name: str, number: str, page: str) -> str:
+    """构造带溯源的位置描述：文档名，第 X 节，P页码"""
+    parts = [doc_name]
+    if number:
+        parts.append(f"第 {number} 节")
+    if page:
+        parts.append(f"P{page}")
+    return "，".join(parts)
+
+
 def generate_report(
     base_name: str,
     compare_name: str,
@@ -126,6 +136,7 @@ def generate_report(
             "new-feature": "新功能章节 (new-feature)",
             "new-design": "新设计章节 (new-design)",
             "new-parameter": "新参数章节 (new-parameter)",
+            "scope-diff": "范围差异 (scope-diff)",
             "other": "其他 (other)",
         }.get(t, t)
         type_rows += f"| {label} | {cnt} |\n"
@@ -189,9 +200,23 @@ def generate_report(
             item_types.append(d.get("type", "unknown"))
             item_impacts.append(d.get("impact", "中"))
 
-            # 位置描述
-            base_loc = f"第 {item.get('base_section_number', '')} 节"
-            compare_loc = f"第 {item.get('compare_section_number', '')} 节"
+            # 位置描述（带原文溯源：文档名 / 章节号 / 页码）
+            if item.get("base_section_id") is None:
+                base_loc = "（Base 中不存在）"
+            else:
+                base_loc = _fmt_loc(
+                    base_name,
+                    item.get("base_section_number", ""),
+                    item.get("base_page", ""),
+                )
+            if item.get("compare_section_id") is None:
+                compare_loc = "（Compare 中不存在）"
+            else:
+                compare_loc = _fmt_loc(
+                    compare_name,
+                    item.get("compare_section_number", ""),
+                    item.get("compare_page", ""),
+                )
 
             # 原文引用（截断）
             base_quote = (d.get("base_quote") or "").replace("\n", " ")[:300]
