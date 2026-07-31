@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 表格提取（2026-08-01）
+
+- **Phase 0**：JRE 25 + camelot 2.0.0 安装完成
+- **Phase 1**：`extract_tables_camelot()` 实现，支持 stream/lattice 模式
+- **Phase 1**：`_table_to_markdown()` / `_tables_to_markdown()` 表格转 Markdown
+- **Phase 1**：`parse_pdf()` 返回三元组 `(md, pages, tables)`
+- **Phase 2**：`_parse_sections_from_markdown()` 解析章节边界
+- **Phase 2**：`_associate_tables_with_sections()` 表格关联章节（页码 + 文本匹配）
+- **Phase 2**：`_insert_tables_into_sections()` 表格插回章节末尾
+- **Phase 3**：慢测试标记 `@pytest.mark.slow`，pytest.ini 注册 marker
+- **Phase 3**：全量测试 133 passed, 13 deselected (3.60s)
+- **配置**：`pdf.use_camelot` / `camelot_flavor` / `table_min_accuracy` / `fallback_to_pdfplumber`
+- **依赖**：`requirements.txt` 新增 `camelot-py>=2.0.0`
+
 ### 工程框架
 
 - 创建完整项目骨架（目录结构 + 核心模块）
