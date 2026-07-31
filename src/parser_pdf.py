@@ -2,7 +2,7 @@
 PDF 解析模块
 
 将 PDF 文档解析为结构化 Markdown（保留章节层级、段落定位信息）。
-支持：pdfplumber（主力）+ pdfminer.six（备选）+ pypdfium2（图片 OCR 辅助）。
+支持：pdfplumber（主力）+ pdfminer.six（备选）。
 """
 
 import logging
