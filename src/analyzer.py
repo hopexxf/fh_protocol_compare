@@ -16,7 +16,9 @@ import logging
 import re
 from typing import Optional
 
-from src.llm_client import get_llm_client, _load_gateway_token
+import httpx
+
+from src.llm_client import get_llm_client, _load_gateway_token, _get_gateway_port
 
 logger = logging.getLogger("fh_protocol_compare.analyzer")
 
@@ -504,10 +506,25 @@ def _sync_batch(diff_results: list[dict], llm_client) -> list[dict]:
 # 异步并发批量（主入口）
 # ---------------------------------------------------------------------------
 
+def _fmt_err(e: Exception) -> str:
+    """构造异常描述。httpcore 1.0.9 的 ReadTimeout.str() 返回空串，
+    必须同时记录异常类型名，否则失败原因会静默丢失（706 个失败无任何信息）。"""
+    msg = str(e)
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
+def _is_mock_client(client) -> bool:
+    """检测是否为 mock 对象（MagicMock 等），用于测试桩降级同步路径。
+
+    真实 LLMClient 无 `called` 属性；MagicMock / 测试桩有。
+    """
+    return bool(client) and hasattr(client, "called")
+
+
 async def analyze_diff_batch_async(
     diff_results: list[dict],
     llm_client: Optional = None,
-    concurrency: int = 10,
+    concurrency: int = 8,
 ) -> list[dict]:
     """
     异步并发批量分析 diff 结果。
@@ -515,8 +532,6 @@ async def analyze_diff_batch_async(
     使用 httpx 异步流式请求 Gateway（并发度可调）。
     检测到 mock 对象时自动降级为同步。
     """
-    import httpx
-
     client = llm_client or get_llm_client()
     client.set_session_label("fh_protocol_compare_batch")
 
@@ -532,24 +547,21 @@ async def analyze_diff_batch_async(
     if not todo:
         return [skip.get(i, diff_results[i]) for i in range(len(diff_results))]
 
-    # mock / 无 token 时降级同步
+    # mock 对象（测试/调试桩）或无 token 时降级同步，直接调用 client.chat
     token = _load_gateway_token()
-    if not token:
+    if not token or _is_mock_client(llm_client):
         return _sync_batch(diff_results, llm_client)
 
-    gw_port = llm_client.config.get("llm", {}).get("gateway_port", 61791) if llm_client else 61791
-    if not isinstance(gw_port, int):
-        return _sync_batch(diff_results, llm_client)
-
-    url = f"http://localhost:{gw_port}/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
     }
+    logger.debug("[Analyzer] Gateway token 已加载，端口将在每次请求时动态解析")
 
     total = len(todo)
     completed = 0
     lock = asyncio.Lock()
+    MAX_RETRIES = 3
 
     async def fetch_one(sem: asyncio.Semaphore, idx: int, item: dict) -> tuple[int, dict]:
         nonlocal completed
@@ -562,29 +574,40 @@ async def analyze_diff_batch_async(
             "stream": True,
             "user": "fh_protocol_compare_batch",
         }
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client_http:
-                async with client_http.stream("POST", url, headers=headers, json=payload) as resp:
-                    resp.raise_for_status()
-                    content_parts = []
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(data)
-                            delta = obj.get("choices", [{}])[0].get("delta", {})
-                            if delta.get("content"):
-                                content_parts.append(delta["content"])
-                        except (json.JSONDecodeError, IndexError, KeyError):
-                            continue
-            raw = "".join(content_parts)
-            result = _parse_llm_result(item, raw)
-        except Exception as e:
-            logger.warning(f"[Analyzer] 分析章节 {idx+1} 失败: {e}")
-            result = {**item, "llm_result": {"diffs": [], "summary": f"LLM 调用失败: {e}"}}
+        last_err: Optional[str] = None
+        for attempt in range(MAX_RETRIES):
+            # 每次重试重新解析 Gateway 端口：端口会随 Gateway 重启漂移
+            gw_port = _get_gateway_port()
+            url = f"http://localhost:{gw_port}/v1/chat/completions"
+            try:
+                async with sem:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client_http:
+                        async with client_http.stream("POST", url, headers=headers, json=payload) as resp:
+                            resp.raise_for_status()
+                            content_parts = []
+                            async for line in resp.aiter_lines():
+                                if not line.startswith("data:"):
+                                    continue
+                                data = line[5:].strip()
+                                if data == "[DONE]":
+                                    break
+                                try:
+                                    obj = json.loads(data)
+                                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                                    if delta.get("content"):
+                                        content_parts.append(delta["content"])
+                                except (json.JSONDecodeError, IndexError, KeyError):
+                                    continue
+                raw = "".join(content_parts)
+                result = _parse_llm_result(item, raw)
+                return (idx, result)
+            except Exception as e:
+                last_err = _fmt_err(e)
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+        logger.warning(f"[Analyzer] 分析章节 {idx+1} 失败（重试 {MAX_RETRIES} 次）: {last_err}")
+        result = {**item, "llm_result": {"diffs": [], "summary": f"LLM 调用失败: {last_err}"}}
 
         async with lock:
             completed += 1
@@ -602,7 +625,7 @@ async def analyze_diff_batch_async(
 
     # 批量完成后清理 Gateway 会话
     try:
-        llm_client.cleanup_sessions()
+        client.cleanup_sessions()
     except Exception as e:
         logger.debug(f"[Analyzer] 会话清理异常: {e}")
 
@@ -612,12 +635,13 @@ async def analyze_diff_batch_async(
 def analyze_diff_batch(
     diff_results: list[dict],
     llm_client: Optional = None,
+    concurrency: int = 8,
 ) -> list[dict]:
-    """批量分析 diff 结果（默认异步并发，concurrency=10）。
+    """批量分析 diff 结果（默认异步并发，concurrency=8）。
 
     仅分析 has_diff=True 或独有章节的条目，跳过无变更的对齐章节。
     """
-    return asyncio.run(analyze_diff_batch_async(diff_results, llm_client))
+    return asyncio.run(analyze_diff_batch_async(diff_results, llm_client, concurrency))
 
 
 # ---------------------------------------------------------------------------

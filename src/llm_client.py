@@ -23,6 +23,37 @@ logger = logging.getLogger("fh_protocol_compare.llm")
 # helpers
 # ---------------------------------------------------------------------------
 
+def _get_gateway_port() -> int:
+    """从 openclaw.json 动态读取当前 Gateway 监听端口。
+
+    Gateway 每次重启会从 openclaw.json 重新读取 gateway.port，端口会漂移
+    （实测曾从 61791 → 53311 → 51900）。静态写在 settings.yml 的端口会失效，
+    因此每次调用都应从 openclaw.json 取实时值，仅在读取失败时回退到
+    settings.yml 的 gateway_port，再回退默认 61791。
+    """
+    # 1) 优先读 openclaw.json 实时端口
+    try:
+        cfg_path = Path.home() / ".qclaw" / "openclaw.json"
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            port = cfg.get("gateway", {}).get("port")
+            if isinstance(port, int) and 1 <= port <= 65535:
+                return port
+    except Exception:
+        pass
+    # 2) 回退到 settings.yml
+    try:
+        from src.config_loader import get_config
+        port = get_config().get("llm", {}).get("gateway_port")
+        if isinstance(port, int) and 1 <= port <= 65535:
+            return port
+    except Exception:
+        pass
+    # 3) 最后兜底
+    return 61791
+
+
 def _load_gateway_token() -> Optional[str]:
     """从 openclaw.json 读取 gateway Bearer token"""
     cfg_path = Path.home() / ".qclaw" / "openclaw.json"
@@ -95,8 +126,8 @@ class LLMClient:
         # 端点 1：OpenClaw Gateway（从 openclaw.json 读 Bearer token）
         gw_token = _load_gateway_token()
         if gw_token:
-            # 优先用 settings.yml 中的 gateway.port，否则默认 61791
-            gw_port = self.config.get("llm", {}).get("gateway_port", 61791)
+            # 优先用 openclaw.json 实时端口，回退 settings.yml 的 gateway_port
+            gw_port = _get_gateway_port()
             endpoints.append({
                 "name": "gateway",
                 "base_url": f"http://localhost:{gw_port}/v1",

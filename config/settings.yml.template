@@ -13,6 +13,7 @@ llm:
   use_openclaw: true           # 是否使用 OpenClaw 集成（推荐，优先使用）
   api_key: ""                  # 直连 API Key（留空则通过 OpenClaw 调用）
   model: "gpt-3.5-turbo"      # 直连时的模型
+  gateway_port: 53311          # OpenClaw Gateway 监听端口（默认 53311，从 ~/.qclaw/openclaw.json 读取）
   base_url: "https://api.openai.com/v1"
   temperature: 0.3
   max_tokens: 1500
