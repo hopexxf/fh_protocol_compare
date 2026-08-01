@@ -349,6 +349,18 @@ def _get_dynamic_hint(content: str, max_hints: int = 3) -> str:
 # 内部工具
 # ---------------------------------------------------------------------------
 
+# Gateway 流式 LLM 端点对超长请求会挂死（阈值约 8K~20K 字符）。
+# 注入 prompt 前截断内容，既防挂起又提速。
+MAX_LLM_CONTENT_CHARS = 6000
+
+
+def _truncate(text: str, max_chars: int = MAX_LLM_CONTENT_CHARS) -> str:
+    """截断超长内容，避免 Gateway 流式请求挂死。"""
+    if not text or len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...[内容已截断，保留前 %d 字符]" % max_chars
+
+
 def _build_messages(diff_item: dict) -> list[dict]:
     """为单个 diff_item 构建 LLM messages"""
     base_id = diff_item.get("base_section_id")
@@ -356,11 +368,13 @@ def _build_messages(diff_item: dict) -> list[dict]:
 
     if base_id and compare_id:
         # 对齐章节：注入动态提示
+        base_content_tr = _truncate(diff_item.get("base_content", ""))
+        compare_content_tr = _truncate(diff_item.get("compare_content", ""))
         combined_content = (
             diff_item.get("base_section_title", "") + " " +
-            diff_item.get("base_content", "") + " " +
+            base_content_tr + " " +
             diff_item.get("compare_section_title", "") + " " +
-            diff_item.get("compare_content", "")
+            compare_content_tr
         )
         dynamic_hint = _get_dynamic_hint(combined_content)
         
@@ -373,8 +387,8 @@ def _build_messages(diff_item: dict) -> list[dict]:
                     base_title=diff_item.get("base_section_title", ""),
                     compare_num=diff_item.get("compare_section_number", ""),
                     compare_title=diff_item.get("compare_section_title", ""),
-                    base_content=diff_item.get("base_content", "（无内容）"),
-                    compare_content=diff_item.get("compare_content", "（无内容）"),
+                    base_content=base_content_tr or "（无内容）",
+                    compare_content=compare_content_tr or "（无内容）",
                     diff_summary=diff_item.get("diff_summary", ""),
                     dynamic_hint=dynamic_hint,
                 ),
@@ -388,7 +402,7 @@ def _build_messages(diff_item: dict) -> list[dict]:
                 "content": ANALYZE_ADDED_USER.format(
                     compare_num=diff_item.get("compare_section_number", ""),
                     compare_title=diff_item.get("compare_section_title", ""),
-                    compare_content=diff_item.get("compare_content", ""),
+                    compare_content=_truncate(diff_item.get("compare_content", "")) or "（无内容）",
                 ),
             },
         ]
@@ -402,7 +416,7 @@ def _build_messages(diff_item: dict) -> list[dict]:
                 "content": ANALYZE_REMOVED_USER.format(
                     base_num=diff_item.get("base_section_number", ""),
                     base_title=diff_item.get("base_section_title", ""),
-                    base_content=diff_item.get("base_content", ""),
+                    base_content=_truncate(diff_item.get("base_content", "")) or "（无内容）",
                 ),
             },
         ]
