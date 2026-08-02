@@ -75,6 +75,8 @@ def run_comparison(
     output_dir: str = "versions",
     archive: bool = True,
     logger: logging.Logger = None,
+    max_items: int = None,
+    concurrency: int = 1,
 ) -> str:
     """
     执行单次比对，返回报告 Markdown。
@@ -114,9 +116,14 @@ def run_comparison(
     diffs_found = sum(1 for d in diff_raw if d.get("has_diff"))
     logger.info(f"[3/5] 差异提取完成：{diffs_found} 个章节存在差异")
 
+    # 子集模式：仅分析前 N 个差异条目（用于快速验证）
+    if max_items and max_items > 0:
+        diff_raw = diff_raw[:max_items]
+        logger.info(f"[3/5] 子集模式：截取前 {len(diff_raw)} 个差异条目（--max-items={max_items}）")
+
     # ---- Step 4: LLM 分析 ----
-    logger.info("[4/5] LLM 语义分析...")
-    analyzed = analyze_diff_batch(diff_raw)
+    logger.info(f"[4/5] LLM 语义分析（concurrency={concurrency}）...")
+    analyzed = analyze_diff_batch(diff_raw, concurrency=concurrency)
     stats = summarize_all(analyzed)
     logger.info(f"[4/5] 分析完成：共 {stats['total_diff_items']} 个差异条目，"
                 f"高影响 {stats['by_impact'].get('高', 0)}，"
@@ -193,6 +200,8 @@ def main():
     parser.add_argument("--output", default="versions", help="输出目录（默认: versions）")
     parser.add_argument("--no-archive", action="store_true", help="不归档产物，仅输出报告")
     parser.add_argument("--verbose", "-v", action="store_true", help="显示详细日志")
+    parser.add_argument("--max-items", type=int, default=None, help="子集模式：仅分析前 N 个差异条目")
+    parser.add_argument("--concurrency", type=int, default=1, help="LLM 并发数（默认 1，Gateway 并发易挂死）")
     args = parser.parse_args()
 
     # 日志
@@ -233,6 +242,8 @@ def main():
             output_dir=args.output,
             archive=not args.no_archive,
             logger=logger,
+            max_items=args.max_items,
+            concurrency=args.concurrency,
         )
         logger.info("比对完成。")
     except Exception as e:

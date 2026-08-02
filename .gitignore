@@ -58,7 +58,10 @@ logs/
 tmp/
 *.log
 
-# 本地临时脚本（调试用）
+# 本地临时脚本（调试用，前缀 _ 或 check_）
+# 排障期间产生的大量临时探针脚本统一忽略，避免误提交
+_*.py
+check_*.py
 verify.ps1
 tests/debug_differ.py
 

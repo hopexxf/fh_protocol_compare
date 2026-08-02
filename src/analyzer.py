@@ -7,7 +7,9 @@ LLM 差异分析模块
   - 详细描述（中文）
   - 工作量提示
 
-支持异步并发批量调用（concurrency=10），大幅加速。
+支持异步批量调用（默认 concurrency=3，但 OpenClaw Gateway 并发 >1 易挂死，
+main.py 调用时默认 concurrency=1）。单请求非流式、内容截断至 3000 字符，
+失败自动重试 3 次。
 """
 
 import asyncio
@@ -351,7 +353,7 @@ def _get_dynamic_hint(content: str, max_hints: int = 3) -> str:
 
 # Gateway 流式 LLM 端点对超长请求会挂死（阈值约 8K~20K 字符）。
 # 注入 prompt 前截断内容，既防挂起又提速。
-MAX_LLM_CONTENT_CHARS = 6000
+MAX_LLM_CONTENT_CHARS = 3000
 
 
 def _truncate(text: str, max_chars: int = MAX_LLM_CONTENT_CHARS) -> str:
@@ -535,10 +537,44 @@ def _is_mock_client(client) -> bool:
     return bool(client) and hasattr(client, "called")
 
 
+def _extract_content_from_response(text: str) -> str:
+    """从 Gateway 响应体提取 LLM 文本。
+
+    Gateway 对 stream=False 的返回格式不稳定：偶发返回纯 JSON，偶发返回 SSE（data: 行）。
+    两种格式都兼容解析。
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    # 优先尝试纯 JSON
+    try:
+        obj = json.loads(text)
+        return obj["choices"][0]["message"]["content"]
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+        pass
+    # 回退尝试 SSE 格式
+    parts = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            obj = json.loads(data)
+            delta = obj.get("choices", [{}])[0].get("delta", {})
+            if delta.get("content"):
+                parts.append(delta["content"])
+        except (json.JSONDecodeError, IndexError, KeyError):
+            continue
+    return "".join(parts)
+
+
 async def analyze_diff_batch_async(
     diff_results: list[dict],
     llm_client: Optional = None,
-    concurrency: int = 8,
+    concurrency: int = 3,
 ) -> list[dict]:
     """
     异步并发批量分析 diff 结果。
@@ -585,7 +621,7 @@ async def analyze_diff_batch_async(
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 1500,
-            "stream": True,
+            "stream": False,
             "user": "fh_protocol_compare_batch",
         }
         last_err: Optional[str] = None
@@ -595,25 +631,17 @@ async def analyze_diff_batch_async(
             url = f"http://localhost:{gw_port}/v1/chat/completions"
             try:
                 async with sem:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client_http:
-                        async with client_http.stream("POST", url, headers=headers, json=payload) as resp:
-                            resp.raise_for_status()
-                            content_parts = []
-                            async for line in resp.aiter_lines():
-                                if not line.startswith("data:"):
-                                    continue
-                                data = line[5:].strip()
-                                if data == "[DONE]":
-                                    break
-                                try:
-                                    obj = json.loads(data)
-                                    delta = obj.get("choices", [{}])[0].get("delta", {})
-                                    if delta.get("content"):
-                                        content_parts.append(delta["content"])
-                                except (json.JSONDecodeError, IndexError, KeyError):
-                                    continue
-                raw = "".join(content_parts)
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(150.0)) as client_http:
+                        resp = await client_http.post(url, headers=headers, json=payload)
+                        resp.raise_for_status()
+                        raw = _extract_content_from_response(resp.text)
+                        if not raw:
+                            raise ValueError("Gateway 返回空内容")
                 result = _parse_llm_result(item, raw)
+                async with lock:
+                    completed += 1
+                    if completed % 10 == 0 or completed == total:
+                        logger.info(f"[Analyzer] 进度 {completed}/{total}")
                 return (idx, result)
             except Exception as e:
                 last_err = _fmt_err(e)
@@ -627,6 +655,7 @@ async def analyze_diff_batch_async(
             completed += 1
             if completed % 10 == 0 or completed == total:
                 logger.info(f"[Analyzer] 进度 {completed}/{total}")
+        return (idx, result)
         return (idx, result)
 
     sem = asyncio.Semaphore(concurrency)
@@ -649,9 +678,9 @@ async def analyze_diff_batch_async(
 def analyze_diff_batch(
     diff_results: list[dict],
     llm_client: Optional = None,
-    concurrency: int = 8,
+    concurrency: int = 3,
 ) -> list[dict]:
-    """批量分析 diff 结果（默认异步并发，concurrency=8）。
+    """批量分析 diff 结果（默认异步并发，concurrency=3）。
 
     仅分析 has_diff=True 或独有章节的条目，跳过无变更的对齐章节。
     """

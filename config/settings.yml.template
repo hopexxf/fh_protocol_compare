@@ -66,3 +66,12 @@ pdf:
   fallback_to_pdfplumber: true   # camelot 失败时是否回退到 pdfplumber
   extract_tables: true           # 是否启用表格提取
   insert_tables_to_sections: true  # 是否将表格插回章节（Phase 2）
+
+# 批量比对配置
+# 启动时指定 --batch 即可执行
+batch:
+  base_file: ""                      # Base 文档路径（相对于项目根目录或绝对路径）
+  compare_files: []                  # Compare 文档路径列表（示例见下）
+  # compare_files:
+  #   - "input/compare/ASTRI_v1.pdf"
+  #   - "input/compare/ASTRI_v2.pdf"

@@ -24,6 +24,10 @@ from src.analyzer import (
     analyze_diff_batch,
     analyze_diff_batch_async,
     _fmt_err,
+    _truncate,
+    MAX_LLM_CONTENT_CHARS,
+    _build_messages,
+    _extract_content_from_response,
 )
 from src.llm_client import _get_gateway_port
 
@@ -51,36 +55,23 @@ def _ok_sse_payload(diffs=None, summary="测试摘要"):
 
 
 class _FakeResp:
-    def __init__(self, lines):
-        self._lines = lines
+    """模拟 httpx 非流式响应：.text 为 SSE 格式字符串（与 Gateway 实际返回一致），
+    analyzer 的 _extract_content_from_response 兼容解析。
+    """
+    def __init__(self, text):
+        self.text = text
         self.status_code = 200
         self.headers = {}
 
     def raise_for_status(self):
         return None
 
-    async def aiter_lines(self):
-        for line in self._lines:
-            yield line
-
-
-class _FakeStreamCtx:
-    def __init__(self, resp):
-        self._resp = resp
-
-    async def __aenter__(self):
-        return self._resp
-
-    async def __aexit__(self, *exc):
-        return False
-
 
 class _FakeClient:
-    """可配置成功/失败的假 httpx.AsyncClient。
+    """可配置成功/失败的假 httpx.AsyncClient（非流式 post，匹配 stream:False）。
 
     _fail_first_n: 前 N 个 item（按 index）的所有 attempt 均失败（模拟网络抖动）；
-    其余 item 成功。基于 payload 中的 item index 判定，与并发/重试调度无关，
-    保证恰好 N 个 item 永久失败（验证“单任务失败不影响其他 + 失败 summary 非空”）。
+    其余 item 成功。基于 payload 中的 item index 判定，与并发/重试调度无关。
     """
 
     _fail_first_n = 0
@@ -105,14 +96,13 @@ class _FakeClient:
                 return int(m.group(1))
         return None
 
-    def stream(self, *args, **kwargs):
-        payload = kwargs.get("json") or (args[2] if len(args) >= 3 else None)
+    async def post(self, *args, **kwargs):
+        payload = kwargs.get("json") or (args[1] if len(args) >= 2 else None)
         idx = self._extract_index(payload)
         if idx is not None and idx < _FakeClient._fail_first_n:
             # 前 N 个 item 的所有 attempt 均失败，模拟连接失败
             raise httpx.ConnectError("connection refused (simulated)")
-        resp = _FakeResp(_ok_sse_payload().splitlines(keepends=True))
-        return _FakeStreamCtx(resp)
+        return _FakeResp(_ok_sse_payload())
 
 
 # ---------------------------------------------------------------------------
@@ -267,3 +257,54 @@ def test_batch_no_diff_skipped():
     }]
     results = _run_batch(items, fail_first_n=0)
     assert results[0]["llm_result"]["summary"] == "无显著变更"
+
+
+# ---------------------------------------------------------------------------
+# TC-F / TC-H: 纯函数回归（无需真实 Gateway 网络）
+# ---------------------------------------------------------------------------
+
+def test_extract_content_from_response_json():
+    """Gateway 偶发返回纯 JSON（非 SSE），必须能解析。"""
+    text = json.dumps({"choices": [{"message": {"content": "HELLO"}}]})
+    assert _extract_content_from_response(text) == "HELLO"
+
+
+def test_extract_content_from_response_sse():
+    """Gateway 偶发返回 SSE（data: 行），必须能解析。"""
+    chunk = {"choices": [{"delta": {"content": "WORLD"}}]}
+    text = "data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n"
+    assert _extract_content_from_response(text) == "WORLD"
+
+
+def test_extract_content_from_response_empty():
+    assert _extract_content_from_response("") == ""
+    assert _extract_content_from_response("   ") == ""
+
+
+def test_truncate_caps_long_content():
+    """超长内容必须截断，防止 Gateway 对 >~8K 字符请求挂死。"""
+    long = "X" * 5000
+    out = _truncate(long)
+    assert "X" * 5000 not in out
+    assert "内容已截断" in out
+    assert "保留前 %d 字符" % MAX_LLM_CONTENT_CHARS in out
+
+
+def test_truncate_keeps_short_content():
+    assert _truncate("短文本") == "短文本"
+    assert _truncate("") == ""
+
+
+def test_build_messages_truncates_content():
+    """_build_messages 注入 prompt 前必须截断超长内容。"""
+    long = "Y" * 5000
+    item = {
+        "base_section_id": "b1", "compare_section_id": "c1",
+        "base_section_number": "1", "compare_section_number": "1",
+        "base_section_title": "T1", "compare_section_title": "T2",
+        "base_content": long, "compare_content": long,
+        "diff_summary": "x",
+    }
+    msgs = _build_messages(item)
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "Y" * 5000 not in joined

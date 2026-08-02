@@ -14,6 +14,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from src.llm_client import _load_gateway_token
+
 
 def _get_gateway_config():
     """从 openclaw.json 读取 gateway 配置"""
@@ -41,7 +43,7 @@ def _discover_active_port():
     for port in candidates:
         url = f"http://localhost:{port}/v1/chat/completions"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"model": "openclaw", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5, "stream": False}
+        payload = {"model": "openclaw", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5, "stream": False, "user": "test_gateway_port"}
         try:
             resp = httpx.post(url, headers=headers, json=payload, timeout=30.0)
             if resp.status_code == 200:
@@ -74,6 +76,7 @@ class TestGatewayDiscovery:
             "messages": [{"role": "user", "content": "reply OK only"}],
             "max_tokens": 5,
             "stream": False,
+            "user": "test_gateway_port",
         }
         resp = httpx.post(url, headers=headers, json=payload, timeout=30.0)
         assert resp.status_code == 200, f"请求失败: {resp.status_code} {resp.text}"
@@ -82,6 +85,19 @@ class TestGatewayDiscovery:
         assert "choices" in data, f"响应格式错误: {data}"
         content = data["choices"][0]["message"]["content"]
         print(f"\n  响应: {content}")
+
+    def test_load_gateway_token_reads_openclaw_json(self, tmp_path, monkeypatch):
+        """_load_gateway_token 必须动态读 openclaw.json 的 token（非静态写死）。"""
+        cfg = {"gateway": {"auth": {"token": "SECRET_TOKEN_XYZ"}}}
+        qclaw = tmp_path / ".qclaw"
+        qclaw.mkdir()
+        (qclaw / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
+        monkeypatch.setattr("src.llm_client.Path.home", lambda: tmp_path)
+        assert _load_gateway_token() == "SECRET_TOKEN_XYZ"
+
+    def test_load_gateway_token_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("src.llm_client.Path.home", lambda: tmp_path)  # 无 .qclaw 目录
+        assert _load_gateway_token() is None
 
 
 if __name__ == "__main__":

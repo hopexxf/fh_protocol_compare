@@ -1,9 +1,10 @@
 """
 LLM 客户端模块
 
-降级链（当前环境实测）：
-  1. OpenClaw Gateway (localhost:61791) — Bearer Token，模型 openclaw，流式返回
-  2. 直连 API Key（用户提供 base_url + api_key）
+调用方式：
+  1. OpenClaw Gateway —— 端口与 Bearer Token 每次从 ~/.qclaw/openclaw.json 动态读取
+     （Gateway 重启会漂移，故不写死端口），模型固定为 "openclaw"，非流式 POST
+  2. 直连 API Key —— 用户提供 base_url + api_key（use_openclaw:false 时）
 
 参考 arxiv_agent LLMClient 设计。
 """
