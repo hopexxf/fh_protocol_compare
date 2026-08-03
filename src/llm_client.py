@@ -24,15 +24,36 @@ logger = logging.getLogger("fh_protocol_compare.llm")
 # helpers
 # ---------------------------------------------------------------------------
 
+def _scan_gateway_ports() -> Optional[int]:
+    """主动扫描 QClaw 进程监听的 Gateway 端口，返回第一个可达的。
+
+    当 openclaw.json 中记录的端口因重启漂移后，此函数兜底发现真实端口。
+    QClaw Gateway 只监听 localhost，故只需扫本地端口列表。
+    """
+    import socket
+    # QClaw 历史出现过的端口（从实测记录整理，含当前活跃端口）
+    KNOWN_PORTS = [60760, 60772, 61791, 53311, 51900, 51901, 51902,
+                   19000, 50000, 50001, 50002, 50003]
+    for port in KNOWN_PORTS:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5):
+                logger.debug(f"[Gateway Scan] port {port} is reachable")
+                return port
+        except (OSError, socket.timeout):
+            pass
+    return None
+
+
 def _get_gateway_port() -> int:
-    """从 openclaw.json 动态读取当前 Gateway 监听端口。
+    """从 openclaw.json 动态读取当前 Gateway 监听端口，并主动验证可用性。
 
     Gateway 每次重启会从 openclaw.json 重新读取 gateway.port，端口会漂移
-    （实测曾从 61791 → 53311 → 51900）。静态写在 settings.yml 的端口会失效，
-    因此每次调用都应从 openclaw.json 取实时值，仅在读取失败时回退到
-    settings.yml 的 gateway_port，再回退默认 61791。
+    （实测曾从 61791 → 53311 → 51900 → 60760 → 60772）。静态写在
+    settings.yml 的端口会失效，因此每次调用都应从 openclaw.json 取实时值。
+    若配置的端口实际不可达，则主动扫描兜底。
     """
-    # 1) 优先读 openclaw.json 实时端口
+    configured_port = None
+    # 1) 优先读 openclaw.json 配置端口
     try:
         cfg_path = Path.home() / ".qclaw" / "openclaw.json"
         if cfg_path.exists():
@@ -40,7 +61,7 @@ def _get_gateway_port() -> int:
                 cfg = json.load(f)
             port = cfg.get("gateway", {}).get("port")
             if isinstance(port, int) and 1 <= port <= 65535:
-                return port
+                configured_port = port
     except Exception:
         pass
     # 2) 回退到 settings.yml
@@ -48,11 +69,30 @@ def _get_gateway_port() -> int:
         from src.config_loader import get_config
         port = get_config().get("llm", {}).get("gateway_port")
         if isinstance(port, int) and 1 <= port <= 65535:
-            return port
+            configured_port = port
     except Exception:
         pass
-    # 3) 最后兜底
-    return 61791
+
+    # 3) 验证配置的端口是否实际可达
+    if configured_port:
+        import socket
+        try:
+            with socket.create_connection(("localhost", configured_port), timeout=0.5):
+                logger.debug(f"[Gateway Port] configured {configured_port} is reachable")
+                return configured_port
+        except (OSError, socket.timeout):
+            logger.info(f"[Gateway Port] configured {configured_port} unreachable, scanning...")
+
+    # 4) 扫描兜底
+    discovered = _scan_gateway_ports()
+    if discovered:
+        logger.info(f"[Gateway Port] discovered active port: {discovered}")
+        return discovered
+
+    # 5) 最后兜底
+    fallback = configured_port or 61791
+    logger.warning(f"[Gateway Port] scan failed, using configured/fallback port: {fallback}")
+    return fallback
 
 
 def _load_gateway_token() -> Optional[str]:
