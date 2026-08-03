@@ -17,6 +17,16 @@ logger = logging.getLogger("fh_protocol_compare.parser_pdf")
 # 章节标题识别
 # ---------------------------------------------------------------------------
 
+# 目录行特征：数字开头 + 含 "...." 点线页码 + 总长度>40
+DIR_LINE_PATTERN = re.compile(r"^[\d.]+\s+.+\.{3,}\s*\d+$")
+
+
+def _is_toc_entry(line: str) -> bool:
+    """判断单行是否为目录条目（TOC entry）。"""
+    line = line.strip()
+    return bool(DIR_LINE_PATTERN.match(line)) if len(line) > 40 else False
+
+
 # 常见协议文档章节格式
 SECTION_PATTERNS = [
     re.compile(r"^(\d+)\.\s+(.+)$"),                          # 1. Introduction
@@ -25,6 +35,10 @@ SECTION_PATTERNS = [
     re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)\s+(.+)$"),      # 深度子节
     re.compile(r"^(Annex|Appendix)\s+([A-Z])\.\s+(.+)$", re.I),  # Annex A. Scope
     re.compile(r"^([A-Z])\.\s+(.+)$"),                         # A. Overview
+    # ASTRI / 非标准格式（连字符/无空格）
+    re.compile(r"^(\d+)[-](\d+)\s+(.+)$"),                    # 2-1 Signal Flow
+    re.compile(r"^(\d+)[-](\d+)[-](\d+)\s+(.+)$"),           # 2-1-2 Message
+    re.compile(r"^(\d+)\.(\d+)\s+(.+)$"),                     # 4.1 Signal（无空格版，与上面兼容）
 ]
 
 # 需要过滤的页眉页脚行（常见 3GPP 格式）
@@ -228,7 +242,7 @@ def _tables_to_markdown(tables: list[dict]) -> str:
         if "accuracy" in tbl:
             caption += f"，准确度 {tbl['accuracy']:.1f}%"
 
-        lines.append(f"\n### {caption}\n\n")
+        lines.append(f"\n#### {caption}\n\n")
         lines.append(_table_to_markdown(tbl["table"]))
         lines.append(f"\n<!-- table_page={tbl['page_num']} table_index={tbl['table_index']} -->\n")
 
@@ -333,8 +347,12 @@ def _associate_tables_with_sections(tables: list[dict], sections: list[dict], md
             # 唯一匹配
             section = matched_sections[0]
         elif len(matched_sections) > 1:
-            # 多个匹配，选最后一个（表格通常在章节末尾）
-            section = matched_sections[-1]
+            # 多个匹配：优先选有编号的（ASTRI 无编号辅助章节应排除）
+            numbered = [s for s in matched_sections if re.match(r"^\d", s["section_id"])]
+            if numbered:
+                section = numbered[-1]  # 取最后一个编号章节
+            else:
+                section = matched_sections[-1]
         else:
             # 无匹配，找最近的章节
             section = _find_best_section_by_text(tbl, sections, lines)
@@ -520,6 +538,9 @@ def to_structured_markdown(
                     lines_out.append(f"#### {title}\n")
                     lines_out.append(f"<!-- page={page_num} -->\n")
             else:
+                # 目录行：跳过，不生成章节
+                if _is_toc_entry(line):
+                    continue
                 # 普通段落
                 if len(line) >= min_para_len:
                     lines_out.append(f"{line}\n\n")
@@ -585,10 +606,12 @@ def parse_pdf(
 
         # 4. 处理表格
         if tables:
+            logger.info(f"[PDF] 处理 {len(tables)} 个表格...")
             if insert_tables_to_sections:
-                # Phase 2：插回章节
-                logger.info("[PDF] 启用 Phase 2：表格插回章节")
+                # Phase 2：关联后插回章节
                 sections = _parse_sections_from_markdown(md)
+                # 过滤掉 h4 表格标题（#### 表格 N-M），避免 table 与自身 heading 错误匹配
+                sections = [s for s in sections if not (s["level"] == 4 and "表格" in s.get("title", ""))]
                 tables = _associate_tables_with_sections(tables, sections, md)
                 md = _insert_tables_into_sections(md, tables)
             else:

@@ -21,6 +21,15 @@ from typing import Optional
 
 logger = logging.getLogger("fh_protocol_compare.aligner")
 
+# 目录行特征：数字/点开头 + 含 "...." 点线页码 + 总长度>40
+DIR_LINE_RE = re.compile(r"^[\d.]+\s+.+\.{3,}\s*\d+$")
+
+
+def _is_toc_line(line: str) -> bool:
+    """判断一行是否为目录条目（TOC entry），若是则跳过不对齐。"""
+    line = line.strip()
+    return bool(DIR_LINE_RE.match(line)) if len(line) > 40 else False
+
 # ---------------------------------------------------------------------------
 # 核心功能关键词（用于跨标准语义对齐优先级）
 # ---------------------------------------------------------------------------
@@ -127,8 +136,8 @@ def extract_sections(markdown: str) -> list[dict]:
             number = ""
             title = text.strip()
 
-        # 页码提示
-        page_hint_m = re.search(r"<!--\s*page=(\d+)\s*-->", line)
+        # 页码提示（<!-- page=N --> 或 <!-- table_page=N -->）
+        page_hint_m = re.search(r"<!--\s*(?:page|table_page)=(\d+)\s*-->", line)
         page_hint = page_hint_m.group(1) if page_hint_m else ""
 
         headings.append({
@@ -160,6 +169,9 @@ def extract_sections(markdown: str) -> list[dict]:
             lm = HEADING_RE.match(line.strip())
             if lm and len(lm.group(1)) == sec["level"]:
                 break
+            # 过滤目录行（TOC entry）
+            if _is_toc_line(line):
+                continue
             content_lines.append(line)
         sec["content"] = "\n".join(content_lines).strip()
 

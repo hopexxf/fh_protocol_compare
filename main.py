@@ -124,6 +124,9 @@ def run_comparison(
     diffs_found = sum(1 for d in diff_raw if d.get("has_diff"))
     logger.info(f"[3/6] 差异提取完成：{diffs_found} 个章节存在差异")
 
+    # 保存完整版（用于归档；子集模式截断在分析之后，不丢失完整数据）
+    full_diff_raw = list(diff_raw)
+
     # 子集模式：仅分析前 N 个差异条目（用于快速验证）
     if max_items and max_items > 0:
         diff_raw = diff_raw[:max_items]
@@ -166,6 +169,7 @@ def run_comparison(
             compare_md=compare_md,
             alignment=alignment,
             diff_raw=diff_raw,
+            full_diff_raw=full_diff_raw,
             analyzed=analyzed,
             stats=stats,
             report_md=report_md,

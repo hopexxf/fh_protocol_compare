@@ -43,16 +43,20 @@ def _analyzed():
 
 def test_condense_drops_quotes():
     condensed = condense_analyzed(_analyzed())
-    assert "x" * 5000 not in condensed
+    assert "x" * 5000 not in condensed  # 长原文已截断
     assert "eCPRI header" in condensed
-    assert "U-plane Message Structure" in condensed
+    # 标题不出现在位置行，检查格式特征即可
+    assert "### [1]" in condensed
+    assert "feature-changed" in condensed
     assert "Scope" not in condensed  # 无 diff 的跳过
 
 
-def test_build_abstract_prompt_top_n():
+def test_build_abstract_prompt_structure():
     messages = build_abstract_prompt("清单", {"top_n": 7})
     assert messages[0]["role"] == "system"
-    assert "Top 7" in messages[1]["content"]
+    assert "工作量定位" in messages[1]["content"]
+    assert "关键差异详述" in messages[1]["content"]
+    assert "其余差异简表" in messages[1]["content"]
 
 
 def test_generate_abstract_mock():

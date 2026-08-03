@@ -33,6 +33,11 @@ BOILERPLATE_TITLES = {
     "abbreviations", "缩写",
     "notice",
     "copyright", "版权",
+    # 新增
+    "table of contents",
+    "版本历史",          # ASTRI 修订历史表
+    "版本说明",          # ASTRI 版本说明页
+    "release notes",
 }
 
 # 内容信号（极强 boilerplate 指示，保守使用，避免误删功能章节）
@@ -41,7 +46,24 @@ BOILERPLATE_CONTENT = {
     "all rights reserved",
     "re-published",
     "confidential",
+    # 新增
+    "adopter license",
+    "o-ran alliance",      # O-RAN 版权声明
+    "re-published version",
+    "astri confidential",
+    "document number:",    # ASTRI 文档封面
+    "version number:",    # ASTRI 文档封面
+    "product reference:",
+    "registered in hong kong",
+    "buschkauler weg",    # O-RAN 注册地址
+    "intel corporation",  # ASTRI/Intel 版权页
 }
+
+# TOC 内容信号（正文中的目录行残留，如 "5.4.7.7 .... 112"）
+TOC_CONTENT_SIGNALS = [
+    re.compile(r"\.{3,}\s*\d+$"),          # ".... 112" 行尾
+    re.compile(r"^\s*[\d.]+\s+.+\.{4,}"),  # 缩进目录行
+]
 
 
 def _norm_title(title: str) -> str:
@@ -72,6 +94,10 @@ def is_boilerplate_section(title: str, content: str, cfg: Optional[dict] = None)
 
     # 内容信号
     if c and any(sig in c for sig in BOILERPLATE_CONTENT):
+        return True
+
+    # TOC 行残留信号（正文中的目录条目行）
+    if c and any(sig.search(c) for sig in TOC_CONTENT_SIGNALS):
         return True
 
     # 自定义关键词（配置追加）

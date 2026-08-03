@@ -20,6 +20,26 @@ logger = logging.getLogger("fh_protocol_compare.differ")
 # vendor diff_match_patch
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 辅助函数
+# ---------------------------------------------------------------------------
+
+def _extract_table_page_hint(text: str) -> str:
+    """
+    从 Markdown 内容中提取表格页码标记。
+    支持格式：<!-- TABLE: page=N index=M --> 或 <!-- table_page=N -->
+    返回第一个匹配到的页码字符串，未找到返回空字符串。
+    """
+    if not text:
+        return ""
+    m = re.search(r"<!--\s*(?:TABLE:\s*page|table_page)=(\d+)", text)
+    return m.group(1) if m else ""
+
+
+# ---------------------------------------------------------------------------
+# vendor diff_match_patch
+# ---------------------------------------------------------------------------
+
 _VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor"
 sys.path.insert(0, str(_VENDOR_DIR))
 try:
@@ -218,8 +238,8 @@ def diff_aligned_sections(
             "diff_snippet": snippet,
             "base_content": base_text[:500],
             "compare_content": compare_text[:500],
-            "base_page": base_sec.get("page_hint", ""),
-            "compare_page": compare_sec.get("page_hint", ""),
+            "base_page": base_sec.get("page_hint", "") or _extract_table_page_hint(base_text),
+            "compare_page": compare_sec.get("page_hint", "") or _extract_table_page_hint(compare_text),
         })
 
     # Base 独有章节
@@ -238,7 +258,7 @@ def diff_aligned_sections(
             "diff_snippet": "",
             "base_content": base_sec.get("content", "")[:500],
             "compare_content": "",
-            "base_page": base_sec.get("page_hint", ""),
+            "base_page": base_sec.get("page_hint", "") or _extract_table_page_hint(base_sec.get("content", "")),
         })
 
     # Compare 独有章节
@@ -257,7 +277,7 @@ def diff_aligned_sections(
             "diff_snippet": "",
             "base_content": "",
             "compare_content": compare_sec.get("content", "")[:500],
-            "compare_page": compare_sec.get("page_hint", ""),
+            "compare_page": compare_sec.get("page_hint", "") or _extract_table_page_hint(compare_sec.get("content", "")),
         })
 
     return results
