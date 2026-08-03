@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## v1.1 (2026-08-03)
+
+### 可选优化模块（思路 1/2/3，默认关闭）
+- 思路1 `filter_boilerplate.py`：align 后 / diff 前硬删章节级 boilerplate（双语黑名单 + 内容信号），省 LLM 调用
+- 思路2 `cluster.py`：diff 后 / LLM 前 TF-IDF 余弦连通分量聚类，代表项共享分析（阈值 0.88 实测省 18.9%）
+- 思路3 `abstractor.py`：report 后浓缩（去 quote）→ LLM 生成精简执行摘要
+- `reporter.save_artifacts` 支持 `abstract_md` 归档 `report_abstract.md`
+- 配置段新增 `filter` / `cluster` / `abstract`（默认全关）
+- 新增测试：test_filter_boilerplate（12，含历史数据测量）、test_cluster（7，含历史集成）、test_abstractor（4，mock 零 token）
+- 真实 LLM 预算：仅 1 次 `--max-items 10` 子集验证
+
+---
+
 ## v1.0 (2026-08-01)
 
 ### 核心功能

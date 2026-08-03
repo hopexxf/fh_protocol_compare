@@ -687,6 +687,51 @@ def analyze_diff_batch(
     return asyncio.run(analyze_diff_batch_async(diff_results, llm_client, concurrency))
 
 
+def call_gateway(messages: list[dict], max_tokens: int = 1500) -> str:
+    """单次非流式 Gateway 调用，返回 LLM 文本。供 abstractor 等复用。
+
+    与 analyze_diff_batch_async 真实路径一致：动态端口 + Bearer Token +
+    非流式 + 兼容 JSON/SSE 响应 + 3 次重试。
+    """
+    import time
+
+    token = _load_gateway_token()
+    if not token:
+        raise RuntimeError("Gateway token 未加载，无法调用 LLM")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    payload = {
+        "model": "openclaw",
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": max_tokens,
+        "stream": False,
+        "user": "fh_protocol_compare_abstract",
+    }
+    MAX_RETRIES = 3
+    last_err: Optional[str] = None
+    for attempt in range(MAX_RETRIES):
+        # 每次重试重新解析 Gateway 端口：端口会随 Gateway 重启漂移
+        gw_port = _get_gateway_port()
+        url = f"http://localhost:{gw_port}/v1/chat/completions"
+        try:
+            with httpx.Client(timeout=httpx.Timeout(150.0)) as client_http:
+                resp = client_http.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                raw = _extract_content_from_response(resp.text)
+                if not raw:
+                    raise ValueError("Gateway 返回空内容")
+            return raw
+        except Exception as e:
+            last_err = _fmt_err(e)
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+    raise RuntimeError(f"LLM 调用失败: {last_err}")
+
+
 # ---------------------------------------------------------------------------
 # 统计汇总
 # ---------------------------------------------------------------------------

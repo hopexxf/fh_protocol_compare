@@ -262,6 +262,7 @@ def save_artifacts(
     analyzed: list[dict],
     stats: dict,
     report_md: str,
+    abstract_md: Optional[str] = None,
 ) -> None:
     """
     将比对全流程产物归档到版本目录。
@@ -274,7 +275,8 @@ def save_artifacts(
       ├── diff_raw.json
       ├── analyzed.json
       ├── stats.json
-      └── report.md
+      ├── report.md
+      └── report_abstract.md   （启用思路 3 摘要时）
     """
     from datetime import date
 
@@ -293,6 +295,8 @@ def save_artifacts(
         "stats.json": json.dumps(stats, indent=2, ensure_ascii=False),
         "report.md": report_md,
     }
+    if abstract_md is not None:
+        artifacts["report_abstract.md"] = abstract_md
 
     for name, content in artifacts.items():
         path = version_dir / name

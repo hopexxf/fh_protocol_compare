@@ -43,6 +43,27 @@ analysis:
   analyze_removed_sections: true  # 是否分析 Base 独有章节
   max_tokens_per_call: 1500
 
+# Boilerplate 过滤（思路 1）：过滤与业务无关的章节（版权/目录/参考文献等），省 LLM 调用
+filter:
+  enabled: false
+  skip_boilerplate: true
+  boilerplate_keywords: []        # 可追加自定义关键词（小写子串匹配标题/内容）
+  skip_front_pages: 0             # 可选：跳过年 prefix 页数（默认 0）
+  skip_back_pages: 0              # 可选：跳过末尾页数
+
+# 相似聚类（思路 2）：高阈值语义聚类，代表项共享分析，减少 LLM 调用
+cluster:
+  enabled: false
+  similarity_threshold: 0.88
+  method: tfidf_cosine
+
+# 摘要生成（思路 3）：对报告浓缩后生成精简执行摘要
+abstract:
+  enabled: false
+  focus: development_cost
+  max_tokens: 4000
+  top_n: 10
+
 # 路径配置
 paths:
   input_base: "input/base"           # Base 文档目录

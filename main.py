@@ -33,6 +33,9 @@ from src.aligner import align_markdown
 from src.differ import diff_aligned_sections
 from src.analyzer import analyze_diff_batch, summarize_all
 from src.reporter import generate_report, save_artifacts
+from src.filter_boilerplate import filter_alignment
+from src.cluster import cluster_diff_items, expand_analysis
+from src.abstractor import generate_abstract
 
 
 # ---------------------------------------------------------------------------
@@ -98,41 +101,60 @@ def run_comparison(
     logger.info(f"[比对] Base={base_name}  Compare={compare_name}")
 
     # ---- Step 1: 解析文档 ----
-    logger.info("[1/5] 解析文档...")
+    logger.info("[1/6] 解析文档...")
     base_md, _, _ = parse_document(str(base_path))
     compare_md, _, _ = parse_document(str(compare_path))
-    logger.info(f"[1/5] 解析完成：Base {len(base_md)} chars，Compare {len(compare_md)} chars")
+    logger.info(f"[1/6] 解析完成：Base {len(base_md)} chars，Compare {len(compare_md)} chars")
 
     # ---- Step 2: 章节对齐 ----
-    logger.info("[2/5] 章节对齐...")
+    logger.info("[2/6] 章节对齐...")
     alignment = align_markdown(base_md, compare_md)
-    logger.info(f"[2/5] 对齐完成：{len(alignment['alignments'])} 对，"
+    logger.info(f"[2/6] 对齐完成：{len(alignment['alignments'])} 对，"
                 f"Base 独有 {len(alignment['base_only'])} 节，"
                 f"Compare 独有 {len(alignment['compare_only'])} 节")
 
+    # ---- Step 2.5: Boilerplate 过滤（思路 1，align 后 / diff 前） ----
+    filter_cfg = get_config().get("filter", {})
+    if filter_cfg.get("enabled", False):
+        alignment = filter_alignment(alignment, filter_cfg)
+
     # ---- Step 3: 差异提取 ----
-    logger.info("[3/5] 提取文本差异...")
+    logger.info("[3/6] 提取文本差异...")
     diff_raw = diff_aligned_sections(base_md, compare_md, alignment)
     diffs_found = sum(1 for d in diff_raw if d.get("has_diff"))
-    logger.info(f"[3/5] 差异提取完成：{diffs_found} 个章节存在差异")
+    logger.info(f"[3/6] 差异提取完成：{diffs_found} 个章节存在差异")
 
     # 子集模式：仅分析前 N 个差异条目（用于快速验证）
     if max_items and max_items > 0:
         diff_raw = diff_raw[:max_items]
-        logger.info(f"[3/5] 子集模式：截取前 {len(diff_raw)} 个差异条目（--max-items={max_items}）")
+        logger.info(f"[3/6] 子集模式：截取前 {len(diff_raw)} 个差异条目（--max-items={max_items}）")
 
     # ---- Step 4: LLM 分析 ----
-    logger.info(f"[4/5] LLM 语义分析（concurrency={concurrency}）...")
-    analyzed = analyze_diff_batch(diff_raw, concurrency=concurrency)
+    logger.info(f"[4/6] LLM 语义分析（concurrency={concurrency}）...")
+    cluster_cfg = get_config().get("cluster", {})
+    if cluster_cfg.get("enabled", False):
+        rep_items, cluster_map = cluster_diff_items(diff_raw, cluster_cfg)
+        logger.info(f"[4/6] 聚类：{len(diff_raw)} → {len(rep_items)} 代表项")
+        analyzed_reps = analyze_diff_batch(rep_items, concurrency=concurrency)
+        analyzed = expand_analysis(analyzed_reps, cluster_map, diff_raw)
+    else:
+        analyzed = analyze_diff_batch(diff_raw, concurrency=concurrency)
     stats = summarize_all(analyzed)
-    logger.info(f"[4/5] 分析完成：共 {stats['total_diff_items']} 个差异条目，"
+    logger.info(f"[4/6] 分析完成：共 {stats['total_diff_items']} 个差异条目，"
                 f"高影响 {stats['by_impact'].get('高', 0)}，"
                 f"中影响 {stats['by_impact'].get('中', 0)}，"
                 f"低影响 {stats['by_impact'].get('低', 0)}")
 
     # ---- Step 5: 生成报告 ----
-    logger.info("[5/5] 生成报告...")
+    logger.info("[5/6] 生成报告...")
     report_md = generate_report(base_name, compare_name, analyzed, stats)
+
+    # ---- Step 6: 摘要生成（思路 3） ----
+    abstract_md = None
+    abstract_cfg = get_config().get("abstract", {})
+    if abstract_cfg.get("enabled", False):
+        logger.info("[6/6] 生成摘要...")
+        abstract_md = generate_abstract(analyzed, abstract_cfg)
 
     # 归档
     if archive:
@@ -147,6 +169,7 @@ def run_comparison(
             analyzed=analyzed,
             stats=stats,
             report_md=report_md,
+            abstract_md=abstract_md,
         )
         logger.info(f"[完成] 产物归档至: {output_dir}")
     else:
@@ -154,6 +177,10 @@ def run_comparison(
         report_file = Path.cwd() / f"report_{Path(base_name).stem}_{Path(compare_name).stem}.md"
         report_file.write_text(report_md, encoding="utf-8")
         logger.info(f"[完成] 报告已写入: {report_file}")
+        if abstract_md:
+            abs_file = Path.cwd() / f"report_abstract_{Path(base_name).stem}_{Path(compare_name).stem}.md"
+            abs_file.write_text(abstract_md, encoding="utf-8")
+            logger.info(f"[完成] 摘要已写入: {abs_file}")
 
     return report_md
 

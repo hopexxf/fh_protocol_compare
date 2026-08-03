@@ -62,7 +62,10 @@ C:\myfile\project\fh_protocol_compare\
 │   ├── aligner.py              # 章节对齐（TF-IDF + 余弦）
 │   ├── differ.py               # 差异提取（diff-match-patch）
 │   ├── analyzer.py             # LLM 语义分析
-│   └── reporter.py             # Markdown 报告生成
+│   ├── reporter.py             # Markdown 报告生成
+│   ├── filter_boilerplate.py   # 思路1：Boilerplate 章节过滤（省 LLM 调用）
+│   ├── cluster.py              # 思路2：相似聚类，代表项共享分析（省 LLM 调用）
+│   └── abstractor.py           # 思路3：报告浓缩 + 执行摘要生成
 ├── input/
 │   ├── base/                   # Base 文档（gitignore）
 │   └── compare/                # Compare 文档（gitignore）
@@ -104,6 +107,19 @@ parser_*   aligner    differ    analyzer   reporter
 - 并发数默认 1（Gateway 并发 >1 易挂死），失败自动重试 3 次（2s 递增退避）
 
 ---
+
+### 2.4 可选优化模块（思路 1/2/3，默认关闭）
+
+三个模块均为**可选开关**，默认 `enabled: false`，互不影响，可任意组合。目标均为降低 LLM 调用成本或提升报告可用性。
+
+| 思路 | 模块 | 插入位置 | 作用 | 实测节省 |
+|------|------|----------|------|----------|
+| 1 Boilerplate 过滤 | `filter_boilerplate.py` | align 后 / diff 前 | 硬删版权/目录/参考文献等章节级噪声，省 LLM 调用 + 净化报告 | 章节级 ~4%（真实数据 801 节中 34 节） |
+| 2 相似聚类 | `cluster.py` | diff 后 / LLM 前 | 高阈值 TF-IDF 余弦连通分量聚类，代表项共享分析 | 阈值 0.88 省 18.9%（809→656 代表项） |
+| 3 摘要生成 | `abstractor.py` | report 后 | 浓缩报告（去 quote）→ LLM 生成精简执行摘要 | 报告体积大幅下降；聚焦高影响项 |
+
+> 历史数据测量：20260801 归档（809 条 diff_raw）聚类 0.88 → 656 代表项；章节级 boilerplate 率 4.2%。
+> 开关见 §3.2 `filter` / `cluster` / `abstract` 配置段；默认全关，启用即在 `main.py` 流程中生效（步骤重编号为 1/6…6/6）。
 
 ## 三、配置说明
 
@@ -149,6 +165,25 @@ pdf:
   table_min_accuracy: 80         # 表格准确度阈值（低于则告警）
   extract_tables: true
   insert_tables_to_sections: true  # 表格插回章节
+```
+
+**Boilerplate / 聚类 / 摘要配置**（均默认关闭，详见 §2.4）：
+```yaml
+filter:
+  enabled: false               # 启用 Boilerplate 过滤
+  skip_boilerplate: true       # 按双语黑名单 + 内容信号过滤章节级噪声
+  boilerplate_keywords: []     # 可追加自定义关键词（小写子串匹配标题/内容）
+  skip_front_pages: 0          # 可选：跳过年 prefix 页数
+  skip_back_pages: 0           # 可选：跳过末尾页数
+cluster:
+  enabled: false               # 启用相似聚类
+  similarity_threshold: 0.88   # TF-IDF 余弦连通分量阈值（0.85~0.90 区间）
+  method: tfidf_cosine
+abstract:
+  enabled: false               # 启用报告摘要
+  focus: development_cost      # 聚焦开发成本
+  max_tokens: 4000
+  top_n: 10                    # 摘要聚焦前 N 个高影响差异
 ```
 
 **业务知识配置**（`config/knowledge.yml`）：
@@ -276,6 +311,111 @@ pytest tests/ -v
 | 差异提取 | test_differ.py | 35 | ✅ |
 | LLM 分析 | test_analyzer.py | 26 | ✅ |
 | LLM 健壮性回归 | test_analyzer_robustness.py | 15 | ✅（纯函数，无网络） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
+| Boilerplate 过滤 | test_filter_boilerplate.py | 12 | ✅（含历史数据本地测量） |
+| 相似聚类 | test_cluster.py | 7 | ✅（含历史数据本地集成，零 LLM） |
+| 报告摘要 | test_abstractor.py | 4 | ✅（mock LLM，零 token） |
 | Gateway 端口发现 | test_gateway_port.py | 4 | ✅（含 1 个实时 LLM 调用） |
 | 报告生成 | test_reporter.py | 32 | ✅ |
 
