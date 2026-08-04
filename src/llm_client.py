@@ -19,41 +19,42 @@ import yaml
 
 logger = logging.getLogger("fh_protocol_compare.llm")
 
+# 模块级端口缓存（避免每次 LLM 调用重新扫描）
+_cached_gateway_port: Optional[int] = None
+
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
-def _scan_gateway_ports() -> Optional[int]:
-    """主动扫描 QClaw 进程监听的 Gateway 端口，返回第一个可达的。
+# _scan_gateway_ports removed — port discovery now uses the same
+# static-first strategy as arxiv_agent enricher._load_gateway_port().
+# No TCP blind-scan needed; connectivity is handled by LLMClient._downgrade()
+# at call time, not at discovery time.
 
-    当 openclaw.json 中记录的端口因重启漂移后，此函数兜底发现真实端口。
-    QClaw Gateway 只监听 localhost，故只需扫本地端口列表。
-    """
-    import socket
-    # QClaw 历史出现过的端口（从实测记录整理，含当前活跃端口）
-    KNOWN_PORTS = [60760, 60772, 61791, 53311, 51900, 51901, 51902,
-                   19000, 50000, 50001, 50002, 50003]
-    for port in KNOWN_PORTS:
-        try:
-            with socket.create_connection(("localhost", port), timeout=0.5):
-                logger.debug(f"[Gateway Scan] port {port} is reachable")
-                return port
-        except (OSError, socket.timeout):
-            pass
-    return None
+
+def _reset_gateway_port_cache() -> None:
+    """重置模块级 _cached_gateway_port，供测试隔离使用。"""
+    global _cached_gateway_port
+    _cached_gateway_port = None
 
 
 def _get_gateway_port() -> int:
-    """从 openclaw.json 动态读取当前 Gateway 监听端口，并主动验证可用性。
-
-    Gateway 每次重启会从 openclaw.json 重新读取 gateway.port，端口会漂移
-    （实测曾从 61791 → 53311 → 51900 → 60760 → 60772）。静态写在
-    settings.yml 的端口会失效，因此每次调用都应从 openclaw.json 取实时值。
-    若配置的端口实际不可达，则主动扫描兜底。
     """
-    configured_port = None
-    # 1) 优先读 openclaw.json 配置端口
+    动态发现 Gateway 端口。优先级：
+      1. openclaw.json → gateway.port（最高）
+      2. settings.yml → llm.gateway_port（回退，仅当 1 失败时）
+      3. 硬编码兜底 60772
+
+    与 arxiv_agent enricher._load_gateway_port() 逻辑一致。
+    端口可达性验证在 LLMClient._downgrade() 中进行（调用时降级处理），
+    不在发现阶段做 TCP 盲扫。
+    """
+    global _cached_gateway_port
+    if _cached_gateway_port is not None:
+        return _cached_gateway_port
+
+    # ---- step 1: openclaw.json（最高优先）----
     try:
         cfg_path = Path.home() / ".qclaw" / "openclaw.json"
         if cfg_path.exists():
@@ -61,37 +62,27 @@ def _get_gateway_port() -> int:
                 cfg = json.load(f)
             port = cfg.get("gateway", {}).get("port")
             if isinstance(port, int) and 1 <= port <= 65535:
-                configured_port = port
+                logger.info(f"[Gateway Port] openclaw.json → {port}")
+                _cached_gateway_port = port
+                return port
     except Exception:
         pass
-    # 2) 回退到 settings.yml
+
+    # ---- step 2: settings.yml（仅当 step1 失败时）----
     try:
         from src.config_loader import get_config
         port = get_config().get("llm", {}).get("gateway_port")
         if isinstance(port, int) and 1 <= port <= 65535:
-            configured_port = port
+            logger.info(f"[Gateway Port] settings.yml fallback → {port}")
+            _cached_gateway_port = port
+            return port
     except Exception:
         pass
 
-    # 3) 验证配置的端口是否实际可达
-    if configured_port:
-        import socket
-        try:
-            with socket.create_connection(("localhost", configured_port), timeout=0.5):
-                logger.debug(f"[Gateway Port] configured {configured_port} is reachable")
-                return configured_port
-        except (OSError, socket.timeout):
-            logger.info(f"[Gateway Port] configured {configured_port} unreachable, scanning...")
-
-    # 4) 扫描兜底
-    discovered = _scan_gateway_ports()
-    if discovered:
-        logger.info(f"[Gateway Port] discovered active port: {discovered}")
-        return discovered
-
-    # 5) 最后兜底
-    fallback = configured_port or 61791
-    logger.warning(f"[Gateway Port] scan failed, using configured/fallback port: {fallback}")
+    # ---- step 3: 硬编码兜底 ----
+    fallback = 60772
+    logger.warning(f"[Gateway Port] all methods failed, using hardcoded fallback {fallback}")
+    _cached_gateway_port = fallback
     return fallback
 
 

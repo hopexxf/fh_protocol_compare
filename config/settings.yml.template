@@ -13,7 +13,7 @@ llm:
   use_openclaw: true           # 是否使用 OpenClaw 集成（推荐，优先使用）
   api_key: ""                  # 直连 API Key（留空则通过 OpenClaw 调用）
   model: "gpt-3.5-turbo"      # 直连时的模型
-  gateway_port: 53311          # OpenClaw Gateway 监听端口（默认 53311，从 ~/.qclaw/openclaw.json 读取）
+  gateway_port: ''              # 覆盖端口（可选），留空则从 openclaw.json 自动发现
   base_url: "https://api.openai.com/v1"
   temperature: 0.3
   max_tokens: 1500
@@ -45,7 +45,7 @@ analysis:
 
 # Boilerplate 过滤（思路 1）：过滤与业务无关的章节（版权/目录/参考文献等），省 LLM 调用
 filter:
-  enabled: false
+  enabled: false                       # 默认关闭；改 true 或在 settings.yml 中覆盖
   skip_boilerplate: true
   boilerplate_keywords: []        # 可追加自定义关键词（小写子串匹配标题/内容）
   skip_front_pages: 0             # 可选：跳过年 prefix 页数（默认 0）
@@ -71,7 +71,8 @@ paths:
   output_dir: "versions"             # 比对结果归档目录
   specs_dir: "specs"                 # 结构化提取产物目录
   log_dir: "logs"                   # 日志目录
-  knowledge_config: "config/knowledge.yml"  # 业务知识配置文件
+  knowledge_config: "config/knowledge.yml"       # 业务知识配置文件
+  boilerplate_config: "config/boilerplate.yml"  # Boilerplate 黑名单配置文件
 
 # 日志配置
 logging:

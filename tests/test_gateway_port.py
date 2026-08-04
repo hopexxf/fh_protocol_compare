@@ -2,7 +2,7 @@
 Gateway 端口发现测试。
 
 从 ~/.qclaw/openclaw.json 读取当前 gateway 配置，
-自动检测可用端口（19000/53311），验证 /v1/chat/completions 端点。
+验证 /v1/chat/completions 端点。
 
 使用方法：
     py -3 -m pytest tests/test_gateway_port.py -v
@@ -30,11 +30,12 @@ def _get_gateway_config():
 
 
 def _discover_active_port():
-    """探测所有可能的 gateway 端口，返回第一个可达的 (port, token)"""
+    """探测 gateway 端口，按 openclaw.json 配置优先尝试，返回第一个可达的 (port, token)。"""
     cfg = _get_gateway_config()
     token = cfg["token"]
     configured_port = cfg["port"]
-    candidates = [configured_port, 19000, 61791, 53301]
+    # 按端口历史顺序排，最近的放前面
+    candidates = [configured_port, 60760, 61791, 53311, 51900, 51901, 51902, 19000]
 
     # 去重
     seen = set()

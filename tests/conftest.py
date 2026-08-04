@@ -3,6 +3,7 @@ conftest.py — pytest 全局 fixtures
 """
 
 import os
+import sys as _sys
 import sys
 from pathlib import Path
 
@@ -44,3 +45,13 @@ def oran_pdf_path(sample_base_dir):
     if not files:
         pytest.skip("O-RAN PDF 样本文件不存在")
     return str(files[0])
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_client_cache():
+    """每个测试前重置 llm_client 模块级缓存，防止测试间状态污染。"""
+    try:
+        import src.llm_client as llm_mod
+        llm_mod._cached_gateway_port = None
+    except (ImportError, AttributeError):
+        pass

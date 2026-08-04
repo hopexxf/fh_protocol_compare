@@ -111,16 +111,24 @@ class _FakeClient:
 
 def test_get_gateway_port_reads_openclaw_json(tmp_path, monkeypatch):
     """_get_gateway_port 必须优先读 openclaw.json 实时端口。"""
+    from src.llm_client import _reset_gateway_port_cache
+    _reset_gateway_port_cache()  # 确保测试隔离
     cfg = {"gateway": {"port": 57780, "auth": {"token": "abc"}}}
     qclaw_dir = tmp_path / ".qclaw"
     qclaw_dir.mkdir()
     (qclaw_dir / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
     monkeypatch.setattr("src.llm_client.Path.home", lambda: tmp_path)
+    # 隔离 settings.yml 读取，避免真实配置的 gateway_port 覆盖 mock 值
+    import src.config_loader as cl
+    monkeypatch.setattr(cl, "get_config", lambda: {})
+    # step1 openclaw.json 直接返回，不走 step2/settings/fallback
     assert _get_gateway_port() == 57780
 
 
 def test_get_gateway_port_fallback_settings(tmp_path, monkeypatch):
     """openclaw.json 缺失时回退 settings.yml 的 gateway_port。"""
+    from src.llm_client import _reset_gateway_port_cache
+    _reset_gateway_port_cache()  # 确保测试隔离
     monkeypatch.setattr("src.llm_client.Path.home", lambda: tmp_path)  # 无 openclaw.json
     import src.config_loader as cl
     monkeypatch.setattr(cl, "get_config", lambda: {"llm": {"gateway_port": 12345}})
@@ -128,11 +136,13 @@ def test_get_gateway_port_fallback_settings(tmp_path, monkeypatch):
 
 
 def test_get_gateway_port_default(tmp_path, monkeypatch):
-    """openclaw.json 与 settings.yml 均缺失时回退默认 61791。"""
+    """openclaw.json 与 settings.yml 均缺失时回退硬编码默认值 60772。"""
+    from src.llm_client import _reset_gateway_port_cache
+    _reset_gateway_port_cache()  # 确保测试隔离
     monkeypatch.setattr("src.llm_client.Path.home", lambda: tmp_path)
     import src.config_loader as cl
     monkeypatch.setattr(cl, "get_config", lambda: {})
-    assert _get_gateway_port() == 61791
+    assert _get_gateway_port() == 60772
 
 
 # ---------------------------------------------------------------------------
