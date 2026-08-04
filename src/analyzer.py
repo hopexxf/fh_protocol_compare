@@ -355,6 +355,21 @@ def _get_dynamic_hint(content: str, max_hints: int = 3) -> str:
 # 注入 prompt 前截断内容，既防挂起又提速。
 MAX_LLM_CONTENT_CHARS = 3000
 
+# LLM 请求超时：connect 5s（断网/网关不可达快速失败）、read 30s（上游挂起即断；
+# 正常生成时 token 持续产出，read 超时只计两次读取间隔，不受总时长影响）
+LLM_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
+
+# 连续失败熔断阈值：达到后停止 LLM 调用，剩余项走兜底，保证流程可继续
+# （避免断网等场景下 623 项 × 150s × 3 次重试 ≈ 26 小时的无意义等待）
+CONSECUTIVE_FAIL_LIMIT = 5
+
+# 连接类异常（网关不可达）：httpx 可能被测试替换为极简桩（SimpleNamespace），
+# 故用 getattr 安全引用；桩环境下为空元组，连接类判断自动失效、走普通重试。
+_CONNECT_ERRORS = tuple(
+    t for t in (getattr(httpx, "ConnectError", None), getattr(httpx, "ConnectTimeout", None))
+    if isinstance(t, type)
+)
+
 
 def _truncate(text: str, max_chars: int = MAX_LLM_CONTENT_CHARS) -> str:
     """截断超长内容，避免 Gateway 流式请求挂死。"""
@@ -529,6 +544,30 @@ def _fmt_err(e: Exception) -> str:
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
+def _fallback_result(item: dict, reason: str) -> dict:
+    """LLM 不可用时构造兜底结果，保证后续流程（报告生成等）可继续。
+
+    - Base 独有章节：降级为 feature-removed（与 analyze_diff_item 兜底一致）
+    - 对齐 / Compare 独有：空 diffs + 失败原因（reporter 只消费 llm_result.diffs，兼容）
+    """
+    if not item.get("compare_section_id"):
+        return {
+            **item,
+            "llm_result": {
+                "diffs": [{
+                    "type": "feature-removed",
+                    "impact": "中",
+                    "base_quote": item.get("base_content", "")[:200],
+                    "compare_quote": "",
+                    "description": f"Base 版本中此章节在 Compare 版本中不存在（LLM 不可用: {reason}）",
+                    "workload_hint": "需确认该功能是否仍在 Compare 中实现",
+                }],
+                "summary": "Base 独有章节（LLM 兜底）",
+            },
+        }
+    return {**item, "llm_result": {"diffs": [], "summary": f"LLM 调用失败: {reason}"}}
+
+
 def _is_mock_client(client) -> bool:
     """检测是否为 mock 对象（MagicMock 等），用于测试桩降级同步路径。
 
@@ -612,9 +651,21 @@ async def analyze_diff_batch_async(
     completed = 0
     lock = asyncio.Lock()
     MAX_RETRIES = 3
+    # 熔断状态：连续失败达到阈值后，剩余项不再发请求，直接走兜底
+    consecutive_failures = 0
+    circuit_open = False
 
     async def fetch_one(sem: asyncio.Semaphore, idx: int, item: dict) -> tuple[int, dict]:
-        nonlocal completed
+        nonlocal completed, consecutive_failures, circuit_open
+        label = item.get("base_section_title") or item.get("compare_section_title") or f"#{idx+1}"
+
+        # 熔断已开启：不再发请求，直接兜底
+        async with lock:
+            if circuit_open:
+                completed += 1
+                logger.info(f"[Analyzer] 熔断跳过 {completed}/{total}: {label}")
+                return (idx, _fallback_result(item, "熔断开启"))
+
         messages = _build_messages(item)
         payload = {
             "model": "openclaw",
@@ -626,12 +677,16 @@ async def analyze_diff_batch_async(
         }
         last_err: Optional[str] = None
         for attempt in range(MAX_RETRIES):
+            # 每次重试前检查熔断（等待 semaphore 期间可能已被其他协程触发）
+            async with lock:
+                if circuit_open:
+                    break
             # 每次重试重新解析 Gateway 端口：端口会随 Gateway 重启漂移
             gw_port = _get_gateway_port()
             url = f"http://localhost:{gw_port}/v1/chat/completions"
             try:
                 async with sem:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(150.0)) as client_http:
+                    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client_http:
                         resp = await client_http.post(url, headers=headers, json=payload)
                         resp.raise_for_status()
                         raw = _extract_content_from_response(resp.text)
@@ -640,22 +695,31 @@ async def analyze_diff_batch_async(
                 result = _parse_llm_result(item, raw)
                 async with lock:
                     completed += 1
-                    if completed % 10 == 0 or completed == total:
-                        logger.info(f"[Analyzer] 进度 {completed}/{total}")
+                    consecutive_failures = 0
+                    logger.info(f"[Analyzer] 进度 {completed}/{total}: {label}")
                 return (idx, result)
             except Exception as e:
                 last_err = _fmt_err(e)
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(2 * (attempt + 1))
-                    continue
-        logger.warning(f"[Analyzer] 分析章节 {idx+1} 失败（重试 {MAX_RETRIES} 次）: {last_err}")
-        result = {**item, "llm_result": {"diffs": [], "summary": f"LLM 调用失败: {last_err}"}}
+                is_conn_err = isinstance(e, _CONNECT_ERRORS) if _CONNECT_ERRORS else False
+                async with lock:
+                    consecutive_failures += 1
+                    if consecutive_failures >= CONSECUTIVE_FAIL_LIMIT:
+                        circuit_open = True
+                        logger.warning(
+                            f"[Analyzer] 连续失败 {consecutive_failures} 次 ≥ {CONSECUTIVE_FAIL_LIMIT}，"
+                            f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err}）"
+                        )
+                # 连接类错误重试无意义（网关不可达）；熔断后直接退出
+                if is_conn_err or circuit_open or attempt >= MAX_RETRIES - 1:
+                    break
+                await asyncio.sleep(2 * (attempt + 1))
 
+        # 最终失败 / 熔断退出
+        logger.warning(f"[Analyzer] 分析章节 {idx+1} 失败: {last_err}")
+        result = _fallback_result(item, last_err or "熔断开启")
         async with lock:
             completed += 1
-            if completed % 10 == 0 or completed == total:
-                logger.info(f"[Analyzer] 进度 {completed}/{total}")
-        return (idx, result)
+            logger.info(f"[Analyzer] 进度 {completed}/{total}: {label}（失败兜底）")
         return (idx, result)
 
     sem = asyncio.Semaphore(concurrency)
@@ -717,7 +781,7 @@ def call_gateway(messages: list[dict], max_tokens: int = 1500) -> str:
         gw_port = _get_gateway_port()
         url = f"http://localhost:{gw_port}/v1/chat/completions"
         try:
-            with httpx.Client(timeout=httpx.Timeout(150.0)) as client_http:
+            with httpx.Client(timeout=LLM_TIMEOUT) as client_http:
                 resp = client_http.post(url, headers=headers, json=payload)
                 resp.raise_for_status()
                 raw = _extract_content_from_response(resp.text)

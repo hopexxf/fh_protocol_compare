@@ -235,18 +235,44 @@ def test_batch_all_success():
 
 
 def test_batch_partial_failure_resilient():
-    """20 个 item 中前 5 个网络持续失败（所有 attempt），其余 15 个应正常产出，
+    """20 个 item 中前 3 个网络持续失败（所有 attempt），其余 17 个应正常产出，
     失败项 summary 非空且含异常类型，且不影响其他任务。
+
+    注意：失败数（3）须小于熔断阈值 CONSECUTIVE_FAIL_LIMIT（5），
+    否则连续失败会触发熔断、后续 item 不再重试直接兜底（见 test_batch_circuit_breaker_all_fail）。
     """
-    results = _run_batch(_make_items(20), fail_first_n=5, concurrency=5)
+    results = _run_batch(_make_items(20), fail_first_n=3, concurrency=5)
     success = [r for r in results if r["llm_result"].get("diffs")]
     failed = [r for r in results if "LLM 调用失败" in r["llm_result"].get("summary", "")]
-    assert len(success) == 15, f"成功数应为 15，实际 {len(success)}"
-    assert len(failed) == 5, f"失败数应为 5，实际 {len(failed)}"
+    assert len(success) == 17, f"成功数应为 17，实际 {len(success)}"
+    assert len(failed) == 3, f"失败数应为 3，实际 {len(failed)}"
     for r in failed:
         s = r["llm_result"]["summary"]
         assert s != "LLM 调用失败: ", "失败 summary 不应为空（静默失败）"
         assert "ConnectError" in s, f"失败 summary 应含异常类型名: {s!r}"
+
+
+def test_batch_circuit_breaker_all_fail():
+    """断网场景（全部失败）：连续失败达到阈值后熔断，剩余 item 不再重试直接兜底，
+    避免 623 项 × 150s × 3 次重试的无意义空转。
+    """
+    results = _run_batch(_make_items(20), fail_first_n=20, concurrency=5)
+    assert len(results) == 20
+    summaries = [r["llm_result"].get("summary", "") for r in results]
+    # 熔断前失败项含异常类型；熔断后跳过项标记熔断开启
+    assert all("LLM 调用失败" in s or "熔断" in s for s in summaries)
+    assert any("熔断开启" in s for s in summaries), "应存在熔断后跳过的 item"
+
+
+def test_fallback_base_only_feature_removed():
+    """Base 独有章节在 LLM 不可用时兜底为 feature-removed（与 analyze_diff_item 一致），
+    保证报告流程可继续。"""
+    results = _run_batch(_make_items(3, base_only=True), fail_first_n=3, concurrency=3)
+    assert len(results) == 3
+    for r in results:
+        diffs = r["llm_result"].get("diffs", [])
+        assert diffs, "Base 独有章节兜底应有 feature-removed diff"
+        assert diffs[0]["type"] == "feature-removed", "兜底类型应为 feature-removed"
 
 
 def test_batch_base_only_goes_to_llm():
