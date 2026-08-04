@@ -1,0 +1,82 @@
+title_blacklist:
+  # 目录/索引类
+  - contents
+  - table of contents
+  - 目录
+  - list of tables
+  - 表格列表
+  - list of figures
+  - 图列表
+  - references
+  - 参考文献
+  - index
+  - 索引
+  # 版本/修订类
+  - revision history
+  - 修订历史
+  - document history
+  - document version history
+  - 版本历史
+  - 版本说明
+  - release notes
+  - release history
+  # 前言/说明类
+  - foreword
+  - 前言
+  - glossary
+  - 术语
+  - abbreviations
+  - 缩写
+  # 法律声明类
+  - notice
+  - notice of
+  - copyright
+  - 版权
+  - intel confidential
+  - astri confidential
+  - confidential and proprietary
+  - release notes
+  - release history
+
+content_signals:
+  - \xa9
+  - all rights reserved
+  - re-published
+  - confidential
+  - adopter license
+  - o-ran alliance
+  - re-published version
+  - astri confidential
+  - "document number:"
+  - "version number:"
+  - "product reference:"
+  - registered in hong kong
+  - buschkauler weg
+  - intel corporation
+  - astri inc 2018
+  - intel confidential
+  - confidential and proprietary
+  - ip rights policy
+  - adopter license agreement
+  - o-ran adopter license
+  - annex zzz
+  - final specification
+  - re-published version of the attached final specification
+  - prior versions of the ipr policy will apply
+  - nr cran rru design
+  - applied science and technology research institute
+  - astri company limited
+  - 1st draft
+  - 2nd draft
+  - respond to comments from
+  - all data is preliminary and subject to
+
+toc_patterns:
+  - \.{3,}\s*\d+\$
+  - ^\s*[\d.]+\s+.+\.{4,}
+
+defaults:
+  skip_front_pages: 0
+  skip_back_pages: 0
+  skip_boilerplate: true
+  boilerplate_keywords: []

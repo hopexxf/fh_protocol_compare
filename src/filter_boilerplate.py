@@ -4,6 +4,7 @@ Boilerplate 过滤模块（思路 1）
 在 diff 之后、LLM 分析之前，过滤与业务功能无关的章节
 （版权 / 目录 / 参考文献 / 索引 / 术语表 / 修订历史 / 前言等）。
 
+配置驱动：标题/内容黑名单从 config/boilerplate.yml 读取，支持运行时扩展。
 - 双语高精度黑名单（标题子串匹配）。
 - base_only / compare_only 同样过滤（它们正是 boilerplate 重灾区）。
 - 可选 page 级兜底（跳过封面 / 末尾页）。
@@ -18,52 +19,47 @@ from typing import Optional
 
 logger = logging.getLogger("fh_protocol_compare.filter")
 
+# =============================================================================
+# 配置加载（懒加载，缓存在模块级别）
+# =============================================================================
 
-# 标题黑名单（小写子串匹配，双语）
-BOILERPLATE_TITLES = {
-    "contents", "目录",
-    "revision history", "修订历史",
-    "document history",
-    "foreword", "前言",
-    "list of tables", "表格列表",
-    "list of figures", "图列表",
-    "references", "参考文献",
-    "index", "索引",
-    "glossary", "术语",
-    "abbreviations", "缩写",
-    "notice",
-    "copyright", "版权",
-    # 新增
-    "table of contents",
-    "版本历史",          # ASTRI 修订历史表
-    "版本说明",          # ASTRI 版本说明页
-    "release notes",
-}
+_BP_CONFIG: dict = {}
+_TOC_PATTERNS_COMPILED: list = []
 
-# 内容信号（极强 boilerplate 指示，保守使用，避免误删功能章节）
-BOILERPLATE_CONTENT = {
-    "©",
-    "all rights reserved",
-    "re-published",
-    "confidential",
-    # 新增
-    "adopter license",
-    "o-ran alliance",      # O-RAN 版权声明
-    "re-published version",
-    "astri confidential",
-    "document number:",    # ASTRI 文档封面
-    "version number:",    # ASTRI 文档封面
-    "product reference:",
-    "registered in hong kong",
-    "buschkauler weg",    # O-RAN 注册地址
-    "intel corporation",  # ASTRI/Intel 版权页
-}
 
-# TOC 内容信号（正文中的目录行残留，如 "5.4.7.7 .... 112"）
-TOC_CONTENT_SIGNALS = [
-    re.compile(r"\.{3,}\s*\d+$"),          # ".... 112" 行尾
-    re.compile(r"^\s*[\d.]+\s+.+\.{4,}"),  # 缩进目录行
-]
+def _load_bp_config() -> dict:
+    """懒加载 boilerplate.yml，只加载一次"""
+    global _BP_CONFIG, _TOC_PATTERNS_COMPILED
+    if _BP_CONFIG:
+        return _BP_CONFIG
+    try:
+        from src.config_loader import get_boilerplate_config as _load
+
+        _BP_CONFIG = _load()
+    except Exception:
+        _BP_CONFIG = {}
+    # 预编译 TOC 正则
+    raw_patterns = _BP_CONFIG.get("toc_patterns", [])
+    _TOC_PATTERNS_COMPILED = [re.compile(p) for p in raw_patterns if isinstance(p, str)]
+    return _BP_CONFIG
+
+
+def _get_titles() -> set:
+    return set(_load_bp_config().get("title_blacklist", []))
+
+
+def _get_content_signals() -> set:
+    return set(_load_bp_config().get("content_signals", []))
+
+
+def _get_toc_signals() -> list:
+    _load_bp_config()
+    return _TOC_PATTERNS_COMPILED
+
+
+# =============================================================================
+# 公共 API
+# =============================================================================
 
 
 def _norm_title(title: str) -> str:
@@ -89,15 +85,15 @@ def is_boilerplate_section(title: str, content: str, cfg: Optional[dict] = None)
     c = (content or "").lower()
 
     # 标题黑名单
-    if t and any(kw in t for kw in BOILERPLATE_TITLES):
+    if t and any(kw in t for kw in _get_titles()):
         return True
 
     # 内容信号
-    if c and any(sig in c for sig in BOILERPLATE_CONTENT):
+    if c and any(sig in c for sig in _get_content_signals()):
         return True
 
-    # TOC 行残留信号（正文中的目录条目行）
-    if c and any(sig.search(c) for sig in TOC_CONTENT_SIGNALS):
+    # TOC 行残留信号
+    if c and any(sig.search(c) for sig in _get_toc_signals()):
         return True
 
     # 自定义关键词（配置追加）
@@ -115,31 +111,23 @@ def _should_drop(item: dict, cfg: dict, global_max_page: int) -> bool:
     bc = item.get("base_content", "") or ""
     cc = item.get("compare_content", "") or ""
 
-    # 标题 / 内容 boilerplate 判定
     if cfg.get("skip_boilerplate", True):
         base_bp = is_boilerplate_section(bt, bc, cfg)
         compare_bp = is_boilerplate_section(ct, cc, cfg)
         if bt and ct:
-            # 对齐对：任一侧命中即丢弃
             if base_bp or compare_bp:
                 return True
         elif not ct:
-            # base_only
             if base_bp:
                 return True
         elif not bt:
-            # compare_only
             if compare_bp:
                 return True
 
-    # page 级兜底（封面 / 末尾页）
     fp = cfg.get("skip_front_pages", 0) or 0
     bp = cfg.get("skip_back_pages", 0) or 0
     if fp > 0 or bp > 0:
-        pages = [
-            p for p in (_page_int(item.get("base_page")), _page_int(item.get("compare_page")))
-            if p
-        ]
+        pages = [p for p in (_page_int(item.get("base_page")), _page_int(item.get("compare_page"))) if p]
         if pages:
             if fp > 0 and any(p <= fp for p in pages):
                 return True
@@ -159,7 +147,6 @@ def filter_diff_items(diff_raw: list[dict], cfg: Optional[dict] = None) -> list[
     if not cfg or not cfg.get("enabled", False):
         return diff_raw
 
-    # 计算全局最大页码（供 skip_back_pages 使用）
     global_max_page = 0
     for item in diff_raw:
         for pv in (item.get("base_page"), item.get("compare_page")):
@@ -194,8 +181,6 @@ def filter_alignment(alignment: dict, cfg: Optional[dict] = None) -> dict:
     if not cfg or not cfg.get("enabled", False):
         return alignment
 
-    cfg = cfg or {}
-
     def _keep(section: dict) -> bool:
         return not is_boilerplate_section(
             section.get("title", "") or "",
@@ -203,14 +188,11 @@ def filter_alignment(alignment: dict, cfg: Optional[dict] = None) -> dict:
             cfg,
         )
 
-    # 过滤对齐对：任一侧为 boilerplate 则丢弃整对
     new_alignments = [
         a for a in alignment.get("alignments", [])
-        if _keep(a.get("base_section", {}))
-        and _keep(a.get("compare_section", {}))
+        if _keep(a.get("base_section", {})) and _keep(a.get("compare_section", {}))
     ]
 
-    # 过滤 base_only / compare_only
     new_base_only = [s for s in alignment.get("base_only", []) if _keep(s)]
     new_compare_only = [s for s in alignment.get("compare_only", []) if _keep(s)]
 
@@ -236,30 +218,31 @@ def filter_alignment(alignment: dict, cfg: Optional[dict] = None) -> dict:
 def count_boilerplate(diff_raw: list[dict], cfg: Optional[dict] = None) -> dict:
     """
     统计 boilerplate 命中情况（本地测量用，无副作用）。
-
     返回 {total, title_hits, content_hits, union}。
     """
     cfg = cfg or {"enabled": True, "skip_boilerplate": True}
+    titles = _get_titles()
+    content_sigs = _get_content_signals()
     total = 0
     title_hits = 0
     content_hits = 0
-    for item in diff_raw:
+    hit_set = set()
+    for i, item in enumerate(diff_raw):
         total += 1
         bt = item.get("base_section_title", "") or ""
         ct = item.get("compare_section_title", "") or ""
         bc = item.get("base_content", "") or ""
         cc = item.get("compare_content", "") or ""
-        if (bt and any(kw in _norm_title(bt) for kw in BOILERPLATE_TITLES)) or \
-           (ct and any(kw in _norm_title(ct) for kw in BOILERPLATE_TITLES)):
+        bt_n = _norm_title(bt)
+        ct_n = _norm_title(ct)
+        t_hit = bool(bt_n and any(kw in bt_n for kw in titles)) or \
+                bool(ct_n and any(kw in ct_n for kw in titles))
+        c_hit = bool(bc and any(sig in bc.lower() for sig in content_sigs)) or \
+                bool(cc and any(sig in cc.lower() for sig in content_sigs))
+        if t_hit:
             title_hits += 1
-        if (bc and any(sig in bc.lower() for sig in BOILERPLATE_CONTENT)) or \
-           (cc and any(sig in cc.lower() for sig in BOILERPLATE_CONTENT)):
+        if c_hit:
             content_hits += 1
-    union = len({
-        i for i, item in enumerate(diff_raw)
-        if (item.get("base_section_title", "") and any(kw in _norm_title(item["base_section_title"]).lower() for kw in BOILERPLATE_TITLES))
-        or (item.get("compare_section_title", "") and any(kw in _norm_title(item["compare_section_title"]).lower() for kw in BOILERPLATE_TITLES))
-        or (item.get("base_content", "") and any(sig in item["base_content"].lower() for sig in BOILERPLATE_CONTENT))
-        or (item.get("compare_content", "") and any(sig in item["compare_content"].lower() for sig in BOILERPLATE_CONTENT))
-    })
-    return {"total": total, "title_hits": title_hits, "content_hits": content_hits, "union": union}
+        if t_hit or c_hit:
+            hit_set.add(i)
+    return {"total": total, "title_hits": title_hits, "content_hits": content_hits, "union": len(hit_set)}

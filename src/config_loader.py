@@ -81,6 +81,35 @@ def get_config() -> Config:
 
 
 # ---------------------------------------------------------------------------
+# Boilerplate 黑名单配置加载
+# ---------------------------------------------------------------------------
+
+_boilerplate_cache: dict = {}
+
+
+def get_boilerplate_config() -> dict:
+    """
+    加载 boilerplate.yml 黑名单配置
+
+    Returns:
+        dict: 包含 title_blacklist / content_signals / toc_patterns / defaults 的字典
+    """
+    global _boilerplate_cache
+
+    if _boilerplate_cache:
+        return _boilerplate_cache
+
+    bp_path = Path(__file__).resolve().parent.parent / "config" / "boilerplate.yml"
+    if not bp_path.exists():
+        return {}
+
+    with open(bp_path, "r", encoding="utf-8") as f:
+        _boilerplate_cache = yaml.safe_load(f) or {}
+
+    return _boilerplate_cache
+
+
+# ---------------------------------------------------------------------------
 # 业务知识加载
 # ---------------------------------------------------------------------------
 
