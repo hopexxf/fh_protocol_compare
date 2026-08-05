@@ -692,58 +692,60 @@ async def analyze_diff_batch_async(
         }
         last_err: Optional[str] = None
         for attempt in range(MAX_RETRIES):
-            # 每次重试前检查熔断（等待 semaphore 期间可能已被其他协程触发）
+            # 检查熔断（等待 semaphore 期间可能已被其他协程触发）
             async with lock:
                 if circuit_open:
                     break
 
-            # 每次重试重新解析 Gateway 端口：端口会随 Gateway 重启漂移
-            gw_port = _get_gateway_port()
-            url = f"http://localhost:{gw_port}/v1/chat/completions"
-            try:
-                async with sem:
+            # 使用上下文管理器确保 semaphore 一定被释放
+            async with sem:
+                # 获取 slot 后再次检查熔断，避免拿到 slot 后仍发起无效 HTTP 调用
+                async with lock:
+                    if circuit_open:
+                        break
+                # 每次重试重新解析 Gateway 端口：端口会随 Gateway 重启漂移
+                gw_port = _get_gateway_port()
+                url = f"http://localhost:{gw_port}/v1/chat/completions"
+                try:
                     async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client_http:
                         resp = await client_http.post(url, headers=headers, json=payload)
                         resp.raise_for_status()
                         raw = _extract_content_from_response(resp.text)
                         if not raw:
                             raise ValueError("Gateway 返回空内容")
-                result = _parse_llm_result(item, raw)
-                async with lock:
-                    completed += 1
-                    consecutive_failures = 0
-                    logger.info(f"[Analyzer] 进度 {completed}/{total}: {label}")
-                return (idx, result)
-            except Exception as e:
-                last_err = _fmt_err(e)
-                is_non_retryable = _is_non_retryable_error(e)
-                async with lock:
-                    consecutive_failures += 1
-                    # 不可重试错误立即触发熔断（网关不可达 / 上游不可用）
-                    if is_non_retryable and consecutive_failures >= circuit_threshold:
-                        circuit_open = True
-                        logger.warning(
-                            f"[Analyzer] 不可重试错误 {consecutive_failures} 次 ≥ {circuit_threshold}，"
-                            f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err}）"
-                        )
-                    elif consecutive_failures >= circuit_threshold:
-                        circuit_open = True
-                        logger.warning(
-                            f"[Analyzer] 连续失败 {consecutive_failures} 次 ≥ {circuit_threshold}，"
-                            f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err}）"
-                        )
-                # 不可重试错误直接退出；熔断后退出；最后次重试退出
-                if is_non_retryable or circuit_open or attempt >= MAX_RETRIES - 1:
-                    break
-                await asyncio.sleep(2 * (attempt + 1))
+                    result = _parse_llm_result(item, raw)
+                    async with lock:
+                        completed += 1
+                        consecutive_failures = 0
+                        logger.info(f"[Analyzer] 进度 {completed}/{total}: {label}")
+                    return (idx, result)
+                except Exception as e:
+                    last_err = _fmt_err(e)
+                    is_non_retryable = _is_non_retryable_error(e)
+                    async with lock:
+                        consecutive_failures += 1
+                        if is_non_retryable and consecutive_failures >= circuit_threshold:
+                            circuit_open = True
+                            logger.warning(
+                                f"[Analyzer] 不可重试错误 {consecutive_failures} 次 ≥ {circuit_threshold}，"
+                                f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err[:80]}）"
+                            )
+                        elif consecutive_failures >= circuit_threshold:
+                            circuit_open = True
+                            logger.warning(
+                                f"[Analyzer] 连续失败 {consecutive_failures} 次 ≥ {circuit_threshold}，"
+                                f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err[:80]}）"
+                            )
+                    # 不可重试错误直接退出；熔断后退出；最后次重试退出
+                    if is_non_retryable or circuit_open or attempt >= MAX_RETRIES - 1:
+                        break
+                    await asyncio.sleep(2 * (attempt + 1))
 
-        # 最终失败 / 熔断退出
-        logger.warning(f"[Analyzer] 分析章节 {idx+1} 失败: {last_err}")
-        result = _fallback_result(item, last_err or "熔断开启")
+        # 最终失败 / 熔断退出（semaphore 在 async with 退出时已自动释放）
         async with lock:
             completed += 1
             logger.info(f"[Analyzer] 进度 {completed}/{total}: {label}（失败兜底）")
-        return (idx, result)
+        return (idx, _fallback_result(item, last_err or "熔断开启"))
 
     sem = asyncio.Semaphore(concurrency)
     tasks = [fetch_one(sem, i, item) for i, item in todo]
