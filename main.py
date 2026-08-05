@@ -19,6 +19,7 @@ FH Protocol Compare - 主入口
 import argparse
 import json
 import logging
+from typing import Optional
 import os
 import sys
 from datetime import date
