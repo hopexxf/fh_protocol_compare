@@ -17,6 +17,7 @@ FH Protocol Compare - 主入口
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -32,7 +33,7 @@ from src.parser_docx import parse_document
 from src.aligner import align_markdown
 from src.differ import diff_aligned_sections
 from src.analyzer import analyze_diff_batch, summarize_all
-from src.reporter import generate_report, save_artifacts
+from src.reporter import generate_report
 from src.filter_boilerplate import filter_alignment, filter_diff_items
 from src.cluster import cluster_diff_items, expand_analysis
 from src.abstractor import generate_abstract
@@ -71,6 +72,47 @@ def setup_logging(log_dir: str = "logs") -> logging.Logger:
 # ---------------------------------------------------------------------------
 # 核心流程
 # ---------------------------------------------------------------------------
+
+def _save_intermediate_artifacts(
+    output_dir: str,
+    base_name: str,
+    compare_name: str,
+    base_md: str,
+    compare_md: str,
+    alignment: dict,
+    diff_raw: list[dict],
+    analyzed: list[dict],
+    stats: dict,
+    full_diff_raw: Optional[list] = None,
+) -> Path:
+    """归档中间产物（base/compare/alignment/diff/analyzed/stats），返回版本目录路径。"""
+    from datetime import date
+
+    date_str = date.today().strftime("%Y%m%d")
+    safe_base = Path(base_name).stem.replace(" ", "_")
+    safe_compare = Path(compare_name).stem.replace(" ", "_")
+    version_dir = Path(output_dir) / f"{date_str}_{safe_base}_vs_{safe_compare}"
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    artifacts = {
+        "base_spec.md": base_md,
+        "compare_spec.md": compare_md,
+        "alignment.json": json.dumps(alignment, indent=2, ensure_ascii=False),
+        "diff_raw.json": json.dumps(diff_raw, indent=2, ensure_ascii=False),
+        "analyzed.json": json.dumps(analyzed, indent=2, ensure_ascii=False),
+        "stats.json": json.dumps(stats, indent=2, ensure_ascii=False),
+    }
+    if full_diff_raw:
+        artifacts["diff_raw_full.json"] = json.dumps(full_diff_raw, indent=2, ensure_ascii=False)
+
+    for fname, content in artifacts.items():
+        path = version_dir / fname
+        path.write_text(content, encoding="utf-8")
+        logger.debug(f"[Reporter] 归档: {path}")
+
+    logger.info(f"[Reporter] 中间产物已归档至: {version_dir}")
+    return version_dir
+
 
 def run_comparison(
     base_path: str,
@@ -157,6 +199,25 @@ def run_comparison(
                 f"中影响 {stats['by_impact'].get('中', 0)},"
                 f"低影响 {stats['by_impact'].get('低', 0)}")
 
+    # ---- Step 4.5: 立即归档中间产物（无论后续是否成功） ----
+    if archive:
+        logger.info("[4.5/6] 归档中间产物（base/compare/alignment/diff/analyzed/stats）...")
+        try:
+            _save_intermediate_artifacts(
+                output_dir=str(output_dir),
+                base_name=base_name,
+                compare_name=compare_name,
+                base_md=base_md,
+                compare_md=compare_md,
+                alignment=alignment,
+                diff_raw=diff_raw,
+                full_diff_raw=full_diff_raw,
+                analyzed=analyzed,
+                stats=stats,
+            )
+        except Exception as e:
+            logger.warning(f"[4.5/6] 中间产物归档失败: {e}")
+
     # ---- Step 5: 生成报告 ----
     logger.info("[5/6] 生成报告...")
     report_md = generate_report(base_name, compare_name, analyzed, stats)
@@ -166,25 +227,32 @@ def run_comparison(
     abstract_cfg = get_config().get("abstract", {})
     if abstract_cfg.get("enabled", False):
         logger.info("[6/6] 生成摘要...")
-        abstract_md = generate_abstract(analyzed, abstract_cfg)
+        try:
+            abstract_md = generate_abstract(analyzed, abstract_cfg)
+        except Exception as e:
+            logger.warning(f"[6/6] 摘要生成失败: {e}，继续归档其他产物")
+            abstract_md = None
 
-    # 归档
+    # 归档报告和摘要（中间产物已在 Step 4.5 归档）
     if archive:
-        save_artifacts(
-            output_dir=str(output_dir),
-            base_name=base_name,
-            compare_name=compare_name,
-            base_md=base_md,
-            compare_md=compare_md,
-            alignment=alignment,
-            diff_raw=diff_raw,
-            full_diff_raw=full_diff_raw,
-            analyzed=analyzed,
-            stats=stats,
-            report_md=report_md,
-            abstract_md=abstract_md,
-        )
-        logger.info(f"[完成] 产物归档至: {output_dir}")
+        # 找到版本目录
+        from datetime import date
+        date_str = date.today().strftime("%Y%m%d")
+        safe_base = Path(base_name).stem.replace(" ", "_")
+        safe_compare = Path(compare_name).stem.replace(" ", "_")
+        version_dir = Path(output_dir) / f"{date_str}_{safe_base}_vs_{safe_compare}"
+
+        # 只保存报告和摘要（追加）
+        report_path = version_dir / "report.md"
+        report_path.write_text(report_md, encoding="utf-8")
+        logger.debug(f"[Reporter] 归档: {report_path}")
+
+        if abstract_md:
+            abs_path = version_dir / "report_abstract.md"
+            abs_path.write_text(abstract_md, encoding="utf-8")
+            logger.debug(f"[Reporter] 归档: {abs_path}")
+
+        logger.info(f"[完成] 产物归档至: {version_dir}")
     else:
         # 直接输出到当前目录
         report_file = Path.cwd() / f"report_{Path(base_name).stem}_{Path(compare_name).stem}.md"
