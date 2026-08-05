@@ -371,6 +371,19 @@ _CONNECT_ERRORS = tuple(
 )
 
 
+def _is_non_retryable_error(e: Exception) -> bool:
+    """判断错误是否不应重试：
+    - 连接类错误（网关不可达）
+    - Gateway 返回 408 Request Timeout（上游 LLM 不可用）
+    """
+    if isinstance(e, _CONNECT_ERRORS):
+        return True
+    # httpx.HTTPStatusError: Client error '408 Request Timeout'
+    if hasattr(e, "response") and hasattr(e.response, "status_code"):
+        return e.response.status_code == 408
+    return False
+
+
 def _truncate(text: str, max_chars: int = MAX_LLM_CONTENT_CHARS) -> str:
     """截断超长内容，避免 Gateway 流式请求挂死。"""
     if not text or len(text) <= max_chars:
@@ -654,17 +667,19 @@ async def analyze_diff_batch_async(
     # 熔断状态：连续失败达到阈值后，剩余项不再发请求，直接走兜底
     consecutive_failures = 0
     circuit_open = False
+    # 熔断阈值：并发度 × 2，保证至少两轮请求都失败才熔断（避免单次抖动误熔断）
+    circuit_threshold = max(concurrency * 2, 5)
 
     async def fetch_one(sem: asyncio.Semaphore, idx: int, item: dict) -> tuple[int, dict]:
         nonlocal completed, consecutive_failures, circuit_open
         label = item.get("base_section_title") or item.get("compare_section_title") or f"#{idx+1}"
 
-        # 熔断已开启：不再发请求，直接兜底
-        async with lock:
-            if circuit_open:
+        # 熔断已开启：不再发请求，直接兜底（circuit_open 是原子布尔，读取无需锁）
+        if circuit_open:
+            async with lock:
                 completed += 1
-                logger.info(f"[Analyzer] 熔断跳过 {completed}/{total}: {label}")
-                return (idx, _fallback_result(item, "熔断开启"))
+            logger.info(f"[Analyzer] 熔断跳过 {completed}/{total}: {label}")
+            return (idx, _fallback_result(item, "熔断开启"))
 
         messages = _build_messages(item)
         payload = {
@@ -681,6 +696,7 @@ async def analyze_diff_batch_async(
             async with lock:
                 if circuit_open:
                     break
+
             # 每次重试重新解析 Gateway 端口：端口会随 Gateway 重启漂移
             gw_port = _get_gateway_port()
             url = f"http://localhost:{gw_port}/v1/chat/completions"
@@ -700,17 +716,24 @@ async def analyze_diff_batch_async(
                 return (idx, result)
             except Exception as e:
                 last_err = _fmt_err(e)
-                is_conn_err = isinstance(e, _CONNECT_ERRORS) if _CONNECT_ERRORS else False
+                is_non_retryable = _is_non_retryable_error(e)
                 async with lock:
                     consecutive_failures += 1
-                    if consecutive_failures >= CONSECUTIVE_FAIL_LIMIT:
+                    # 不可重试错误立即触发熔断（网关不可达 / 上游不可用）
+                    if is_non_retryable and consecutive_failures >= circuit_threshold:
                         circuit_open = True
                         logger.warning(
-                            f"[Analyzer] 连续失败 {consecutive_failures} 次 ≥ {CONSECUTIVE_FAIL_LIMIT}，"
+                            f"[Analyzer] 不可重试错误 {consecutive_failures} 次 ≥ {circuit_threshold}，"
                             f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err}）"
                         )
-                # 连接类错误重试无意义（网关不可达）；熔断后直接退出
-                if is_conn_err or circuit_open or attempt >= MAX_RETRIES - 1:
+                    elif consecutive_failures >= circuit_threshold:
+                        circuit_open = True
+                        logger.warning(
+                            f"[Analyzer] 连续失败 {consecutive_failures} 次 ≥ {circuit_threshold}，"
+                            f"熔断开启，剩余 {total - completed} 条走兜底（原因: {last_err}）"
+                        )
+                # 不可重试错误直接退出；熔断后退出；最后次重试退出
+                if is_non_retryable or circuit_open or attempt >= MAX_RETRIES - 1:
                     break
                 await asyncio.sleep(2 * (attempt + 1))
 
