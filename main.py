@@ -17,6 +17,7 @@ FH Protocol Compare - 主入口
 """
 
 import argparse
+import re
 import json
 import logging
 from typing import Optional
@@ -73,6 +74,37 @@ def setup_logging(log_dir: str = "logs") -> logging.Logger:
 # ---------------------------------------------------------------------------
 # 核心流程
 # ---------------------------------------------------------------------------
+
+def _load_intermediate_artifacts(version_dir):
+    """从已有版本目录加载中间产物，供 --resume 使用。
+
+    返回 dict 含：base_md, compare_md, alignment, diff_raw, analyzed, stats, full_diff_raw。
+    文件缺失时对应字段为 None。
+    """
+    def read_json(name):
+        p = version_dir / name
+        if p.exists():
+            with open(p, encoding='utf-8') as f:
+                return json.load(f)
+        return None
+
+    def read_md(name):
+        p = version_dir / name
+        if p.exists():
+            with open(p, encoding='utf-8') as f:
+                return f.read()
+        return ""
+
+    return {
+        "base_md":       read_md("base_spec.md"),
+        "compare_md":    read_md("compare_spec.md"),
+        "alignment":     read_json("alignment.json"),
+        "diff_raw":      read_json("diff_raw.json"),
+        "analyzed":      read_json("analyzed.json"),
+        "stats":         read_json("stats.json"),
+        "full_diff_raw": read_json("diff_raw_full.json"),
+    }
+
 
 def _save_intermediate_artifacts(
     output_dir: str,
@@ -316,6 +348,9 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="显示详细日志")
     parser.add_argument("--max-items", type=int, default=None, help="子集模式:仅分析前 N 个差异条目")
     parser.add_argument("--concurrency", type=int, default=1, help="LLM 并发数(默认 1,Gateway 并发易挂死)")
+    parser.add_argument("--resume", metavar="DIR", default=None,
+                        help="从已有版本目录恢复：加载中间产物，跳过 Step 1-4，直接生成报告。"
+                             "用于断网重跑或仅修改报告模板后重新生成。")
     args = parser.parse_args()
 
     # 日志
@@ -323,6 +358,85 @@ def main():
     if args.verbose:
         for h in logger.handlers:
             h.setLevel(logging.DEBUG)
+
+    if args.resume:
+        resume_dir = Path(args.resume).resolve()
+        if not resume_dir.exists():
+            logger.error(f"--resume 目录不存在: {resume_dir}")
+            sys.exit(1)
+        logger.info(f"[Resume] 从 {resume_dir} 加载中间产物...")
+        artifacts = _load_intermediate_artifacts(resume_dir)
+        base_md       = artifacts["base_md"]       or ""
+        compare_md    = artifacts["compare_md"]    or ""
+        alignment     = artifacts["alignment"]     or {}
+        diff_raw      = artifacts["diff_raw"]      or []
+        analyzed      = artifacts["analyzed"]      or []
+        stats         = artifacts["stats"]         or {}
+        full_diff_raw = artifacts["full_diff_raw"] or None
+
+        # 从目录名解析 base_name / compare_name（目录格式：{date}_{safe_base}_vs_{safe_compare}）
+        name_part = resume_dir.name
+        m_name = re.match(r"\d{8}_(.+?)_vs_(.+)$", name_part)
+        if m_name:
+            base_name    = m_name.group(1).replace("_", " ")
+            compare_name = m_name.group(2).replace("_", " ")
+        else:
+            base_name, compare_name = "Base", "Compare"
+
+        logger.info(f"[Resume] 加载 analyzed={len(analyzed)} items, stats={stats}")
+
+        # Step 4.5: 重新归档（以当前时间为准，覆盖旧时间戳）
+        version_dir = None
+        if not args.no_archive:
+            version_dir = _save_intermediate_artifacts(
+                output_dir=args.output,
+                base_name=base_name,
+                compare_name=compare_name,
+                base_md=base_md,
+                compare_md=compare_md,
+                alignment=alignment,
+                diff_raw=diff_raw,
+                analyzed=analyzed,
+                stats=stats,
+                full_diff_raw=full_diff_raw,
+                logger=logger,
+            )
+            logger.info(f"[Resume] 产物已更新归档至: {version_dir}")
+
+        # Step 5: 生成报告
+        logger.info("[5/6] 生成报告...")
+        report_md = generate_report(base_name, compare_name, analyzed, stats)
+
+        # Step 6: 摘要
+        abstract_md = None
+        abstract_cfg = get_config().get("abstract", {})
+        if abstract_cfg.get("enabled", False):
+            logger.info("[6/6] 生成摘要...")
+            try:
+                abstract_md = generate_abstract(analyzed, abstract_cfg)
+            except Exception as e:
+                logger.warning(f"[6/6] 摘要生成失败: {e}，继续归档")
+
+        # 归档最终产物
+        if not args.no_archive and version_dir:
+            save_artifacts(
+                version_dir=version_dir,
+                base_name=base_name,
+                compare_name=compare_name,
+                base_md=base_md,
+                compare_md=compare_md,
+                alignment=alignment,
+                analyzed=analyzed,
+                stats=stats,
+                report_md=report_md,
+                abstract_md=abstract_md,
+                logger=logger,
+            )
+
+        logger.info("=" * 50)
+        logger.info("比对完成（Resume 模式）")
+        logger.info("=" * 50)
+        return
 
     logger.info("=" * 50)
     logger.info("FH Protocol Compare 启动")
