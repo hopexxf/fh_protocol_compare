@@ -264,6 +264,87 @@ def test_batch_circuit_breaker_all_fail():
     assert any("熔断开启" in s for s in summaries), "应存在熔断后跳过的 item"
 
 
+def test_batch_circuit_breaker_all_fail():
+    """断网场景（全部失败）：连续失败达到阈值后熔断，剩余 item 不再重试直接兜底，
+    避免 623 项 × 150s × 3 次重试的无意义空转。
+    """
+    results = _run_batch(_make_items(20), fail_first_n=20, concurrency=5)
+    assert len(results) == 20
+    summaries = [r["llm_result"].get("summary", "") for r in results]
+    # 熔断前失败项含异常类型；熔断后跳过项标记熔断开启
+    assert all("LLM 调用失败" in s or "熔断" in s for s in summaries)
+    assert any("熔断开启" in s for s in summaries), "应存在熔断后跳过的 item"
+
+
+def test_batch_circuit_breaker_skips_http_after_open():
+    """
+    熔断开启后，剩余 item 不再发起 HTTP 调用，秒级完成。
+
+    场景：concurrency=5，阈值=10。前 10 个 item 的 HTTP 调用均失败（模拟断网），
+    触发熔断开启。后续 10 个 item 必须不发起 HTTP，直接走兜底。
+
+    回归：修复前熔断检查在 semaphore.acquire() 之前，等在信号量上的协程
+    拿到 slot 后直接发 HTTP，仍等 30s 超时，导致熔断后每条仍耗时 30s。
+    """
+    _FakeClient._fail_first_n = 100          # 前 100 个 item 全部失败
+    _FakeClient._call_count = 0              # 重置计数器
+
+    mock_client = _StubClient()
+    import src.analyzer as analyzer_mod
+    import asyncio as _asyncio
+    _orig_sleep = _asyncio.sleep
+
+    # 自定义 FakeClient 统计 HTTP 调用次数
+    class _CountingClient:
+        http_calls = 0
+
+        class _Resp:
+            text = ""
+            status_code = 200
+            def raise_for_status(self): return None
+
+        def __init__(self, *args, **kwargs): pass
+
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+        async def post(self, *args, **kwargs):
+            _CountingClient.http_calls += 1
+            raise httpx.ConnectError("simulated")
+
+    fake_httpx = SimpleNamespace(AsyncClient=_CountingClient, Timeout=httpx.Timeout)
+    with patch.object(analyzer_mod, "httpx", fake_httpx), \
+         patch.object(analyzer_mod, "_load_gateway_token", lambda: "fake-token"), \
+         patch.object(analyzer_mod, "_get_gateway_port", lambda: 1), \
+         patch.object(_asyncio, "sleep", lambda *a, **k: _orig_sleep(0)):
+        import time
+        t0 = time.perf_counter()
+        results = analyze_diff_batch(
+            _make_items(20), llm_client=mock_client, concurrency=5
+        )
+        elapsed = time.perf_counter() - t0
+
+    assert len(results) == 20, f"应返回 20 个结果，实际 {len(results)}"
+    # 熔断开启后不应再有 HTTP 调用（阈值=10，前 10 个触发后剩余 10 个直接兜底）
+    # 前 10 个每个有 1 个 HTTP 调用（fail_first_n=100，第 1 次 attempt 即失败）
+    assert _CountingClient.http_calls <= 10, (
+        f"熔断开启后不应发起 HTTP 调用，前 10 个最多 10 次，"
+        f"实际 {_CountingClient.http_calls} 次"
+    )
+    # 熔断后剩余 10 个应秒级完成（无 sleep、无等待）
+    assert elapsed < 1.0, (
+        f"熔断后 10 条应秒级完成（<1s），实际 {elapsed:.2f}s，"
+        f"可能是熔断后仍在等待 semaphore 或发起 HTTP"
+    )
+    # 熔断前项含失败原因，熔断后项含熔断标记
+    summaries = [r["llm_result"].get("summary", "") for r in results]
+    assert any("熔断开启" in s for s in summaries), "应有熔断后跳过的 item"
+
+    # 清理
+    _FakeClient._fail_first_n = 0
+    _FakeClient._call_count = 0
+
+
 def test_fallback_base_only_feature_removed():
     """Base 独有章节在 LLM 不可用时兜底为 feature-removed（与 analyze_diff_item 一致），
     保证报告流程可继续。"""
