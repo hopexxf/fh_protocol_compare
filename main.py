@@ -85,6 +85,8 @@ def _save_intermediate_artifacts(
     analyzed: list[dict],
     stats: dict,
     full_diff_raw: Optional[list] = None,
+    *,  # logger follows as keyword-only
+    logger: Optional[logging.Logger] = None,
 ) -> Path:
     """归档中间产物（base/compare/alignment/diff/analyzed/stats），返回版本目录路径。"""
     from datetime import date
@@ -109,9 +111,11 @@ def _save_intermediate_artifacts(
     for fname, content in artifacts.items():
         path = version_dir / fname
         path.write_text(content, encoding="utf-8")
-        logger.debug(f"[Reporter] 归档: {path}")
+        if logger:
+            logger.debug(f"[Reporter] 归档: {path}")
 
-    logger.info(f"[Reporter] 中间产物已归档至: {version_dir}")
+    if logger:
+        logger.info(f"[Reporter] 中间产物已归档至: {version_dir}")
     return version_dir
 
 
@@ -215,6 +219,7 @@ def run_comparison(
                 full_diff_raw=full_diff_raw,
                 analyzed=analyzed,
                 stats=stats,
+                logger=logger,
             )
         except Exception as e:
             logger.warning(f"[4.5/6] 中间产物归档失败: {e}")
