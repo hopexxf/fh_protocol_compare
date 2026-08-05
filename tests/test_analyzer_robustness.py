@@ -1,11 +1,11 @@
-"""
+﻿"""
 analyzer 健壮性回归测试。
 
 覆盖范围（对应 2026-08-01 比对失败根因）：
   TC-A  Gateway 端口动态发现：必须读 openclaw.json 实时端口，而非静态配置
   TC-B  异常日志非静默：httpcore ReadTimeout.str() 为空，必须记录异常类型名
   TC-C  llm_client=None 时正确降级（不抛 AttributeError）
-  TC-E  Base 独有章节走 LLM（不硬编码 feature-removed）
+  TC-E  Base 独有章节走 LLM（不硬编码 feature_removed）
   TC-G  单任务失败不影响其他（gather 韧性 + 失败 summary 非空）
 
 所有测试均不依赖真实 Gateway 网络：通过 monkeypatch httpx.AsyncClient 注入假的 SSE 流。
@@ -348,14 +348,14 @@ def test_batch_circuit_breaker_skips_http_after_open():
 
 
 def test_fallback_base_only_feature_removed():
-    """Base 独有章节在 LLM 不可用时兜底为 feature-removed（与 analyze_diff_item 一致），
+    """Base 独有章节在 LLM 不可用时兜底为 feature_removed（与 analyze_diff_item 一致），
     保证报告流程可继续。"""
     results = _run_batch(_make_items(3, base_only=True), fail_first_n=3, concurrency=3)
     assert len(results) == 3
     for r in results:
         diffs = r["llm_result"].get("diffs", [])
-        assert diffs, "Base 独有章节兜底应有 feature-removed diff"
-        assert diffs[0]["type"] == "feature-removed", "兜底类型应为 feature-removed"
+        assert diffs, "Base 独有章节兜底应有 feature_removed diff"
+        assert diffs[0]["type"] == "feature_removed", "兜底类型应为 feature_removed"
 
 
 def _make_items_compare_only(n):
@@ -373,7 +373,7 @@ def _make_items_compare_only(n):
 
 
 def test_fallback_compare_only_feature_added():
-    """Compare 独有章节在 LLM 不可用时兜底为 feature-added（任务 1）。"""
+    """Compare 独有章节在 LLM 不可用时兜底为 feature_added（任务 1）。"""
     item = {
         "base_section_id": None,
         "compare_section_id": "c0",
@@ -382,12 +382,12 @@ def test_fallback_compare_only_feature_added():
     }
     r = _fallback_result(item, "ConnectError: simulated")
     diffs = r["llm_result"]["diffs"]
-    assert diffs, "Compare 独有章节兜底应有 feature-added diff"
-    assert diffs[0]["type"] == "feature-added", "兜底类型应为 feature-added"
+    assert diffs, "Compare 独有章节兜底应有 feature_added diff"
+    assert diffs[0]["type"] == "feature_added", "兜底类型应为 feature_added"
 
 
 def test_fallback_aligned_unknow_diff():
-    """对齐章节在 LLM 异常时兜底为 unknow-diff（任务 3：仅 LLM 异常的对齐章节）。
+    """对齐章节在 LLM 异常时兜底为 unknow_diff（任务 3：仅 LLM 异常的对齐章节）。
 
     回归：修复前对齐章节兜底为空 diffs，被 reporter 的 `if not diffs: continue` 丢弃，
     导致这类章节在断网报告中完全消失。
@@ -401,17 +401,17 @@ def test_fallback_aligned_unknow_diff():
     r = _fallback_result(item, "熔断开启")
     diffs = r["llm_result"]["diffs"]
     assert diffs, "对齐章节 LLM 异常兜底不应为空（否则被 reporter 丢弃）"
-    assert diffs[0]["type"] == "unknow-diff", "对齐章节 LLM 异常兜底类型应为 unknow-diff"
+    assert diffs[0]["type"] == "unknow_diff", "对齐章节 LLM 异常兜底类型应为 unknow_diff"
 
 
 def test_batch_base_only_goes_to_llm():
-    """Base 独有章节（compare_section_id=None）应进入 LLM 分析，而非硬编码 feature-removed。"""
+    """Base 独有章节（compare_section_id=None）应进入 LLM 分析，而非硬编码 feature_removed。"""
     items = _make_items(3, base_only=True)
     results = _run_batch(items, fail_first_n=0)
     assert len(results) == 3
     for r in results:
-        # 走 LLM 路径 -> 有 diffs；若被硬编码 feature-removed 则 llm_result 无 diffs
-        assert r["llm_result"]["diffs"], "Base 独有章节应经 LLM 分析，不应硬编码 feature-removed"
+        # 走 LLM 路径 -> 有 diffs；若被硬编码 feature_removed 则 llm_result 无 diffs
+        assert r["llm_result"]["diffs"], "Base 独有章节应经 LLM 分析，不应硬编码 feature_removed"
 
 
 def test_batch_no_diff_skipped():

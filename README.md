@@ -1,4 +1,4 @@
-# FH Protocol Compare
+﻿# FH Protocol Compare
 
 > **5G NR 前传协议文档比对工程**
 > 状态：✅ 核心功能完成
@@ -27,14 +27,14 @@
 
 | 维度 | 标签 | 说明 |
 |------|------|------|
-| 功能新增 | `feature-added` | Compare 有，Base 无 |
-| 功能变更 | `feature-changed` | 两者均有但变化 |
-| 功能删除 | `feature-removed` | Base 有，Compare 无（经 LLM 判断，非硬编码） |
-| 设计差异 | `design-diff` | 消息结构、流程变化 |
-| 参数差异 | `param-diff` | 字段、阈值变化 |
-| 范围差异 | `scope-diff` | 标准组织覆盖范围不同（O-RAN 有 / ASTRI 无） |
-| 一致性问题 | `consistency-issue` | 文档内部不自洽 |
-| 未知差异 | `unknow-diff` | LLM 异常时对齐章节的兜底分类（需重跑确认） |
+| 功能新增 | `feature_added` | Compare 有，Base 无 |
+| 功能变更 | `feature_changed` | 两者均有但变化 |
+| 功能删除 | `feature_removed` | Base 有，Compare 无（经 LLM 判断，非硬编码） |
+| 设计差异 | `design_diff` | 消息结构、流程变化 |
+| 参数差异 | `param_diff` | 字段、阈值变化 |
+| 范围差异 | `scope_diff` | 标准组织覆盖范围不同（O-RAN 有 / ASTRI 无） |
+| 一致性问题 | `consistency_issue` | 文档内部不自洽 |
+| 未知差异 | `unknow_diff` | LLM 异常时对齐章节的兜底分类（需重跑确认） |
 
 ---
 
@@ -193,7 +193,7 @@ abstract:
 ```
 
 **业务知识配置**（`config/knowledge.yml`）：
-- `org_background`：标准组织背景（O-RAN vs ASTRI），scope-diff 判断核心
+- `org_background`：标准组织背景（O-RAN vs ASTRI），scope_diff 判断核心
 - `layer_responsibility`：协议分层职责（U/C/S/M-plane），impact 判断核心
 - `diff_patterns`：21 个关键词映射（priority 1-10），运行时按内容动态匹配注入
 
@@ -307,7 +307,7 @@ pytest tests/ -v
 
 **熔断行为**：
 - 连续失败 ≥ 阈值后停止 LLM 调用，剩余条目走兜底结果
-- 兜底结果按章节类型分类：Base 独有 → `feature-removed`，Compare 独有 → `feature-added`，对齐章节 → `unknow-diff`
+- 兜底结果按章节类型分类：Base 独有 → `feature_removed`，Compare 独有 → `feature_added`，对齐章节 → `unknow_diff`
 - 报告正常生成，但差异类型含 "LLM 调用失败" 字样，需联网重跑确认
 
 **断网产物归档**：
@@ -356,7 +356,7 @@ pytest tests/ -v
 | 问题 | 状态 | 提交 |
 |------|------|------|
 | 报告缺页码溯源 | ✅ | e2a50eb |
-| Base 独有章节硬编码 feature-removed | ✅（改走 LLM 判断） | e2a50eb |
+| Base 独有章节硬编码 feature_removed | ✅（改走 LLM 判断） | e2a50eb |
 | requirements.txt 缺 httpx | ✅ | e2a50eb |
 | PDF 表格结构丢失 | ✅（camelot） | f4295c3 |
 | 表格无上下文 | ✅（关联章节） | e7f4d83 |
@@ -370,8 +370,8 @@ pytest tests/ -v
 | 断网卡死（623项×150s×3重试≈26h） | ✅（熔断+短超时+不可重试即时失败） | e0b9dd4 / 3236ba5 |
 | 熔断后仍发 HTTP（semaphore 外检查） | ✅（检查移入 async with sem 内） | e0b9dd4 |
 | 断网时产物丢失（Step 6 崩溃） | ✅（Step 4.5 立即归档中间产物） | 0b88fa0 |
-| Compare 独有无兜底分支 | ✅（feature-added 兜底） | 5842d7f |
-| 对齐章节 LLM 异常被丢弃 | ✅（unknow-diff 非空 diffs） | 5842d7f |
+| Compare 独有无兜底分支 | ✅（feature_added 兜底） | 5842d7f |
+| 对齐章节 LLM 异常被丢弃 | ✅（unknow_diff 非空 diffs） | 5842d7f |
 
 ### 7.2 待改进
 
@@ -436,7 +436,7 @@ httpx>=0.24.0         # 异步并发批量（analyzer.py）
 详见 `CHANGELOG.md`
 
 **关键版本**：
-- **v1.2**（2026-08-05）：断网熔断修复、兜底结果分类（feature-added/unknow-diff）、--resume 参数、中间产物提前归档
+- **v1.2**（2026-08-05）：断网熔断修复、兜底结果分类（feature_added/unknow_diff）、--resume 参数、中间产物提前归档
 - **v1.1**（2026-08-03）：LLM/Gateway 调用约束固化、测试回归、文档与配置整理
 - **v1.0**（2026-08-01）：核心功能完成，表格提取方案完成
 - **v0.1**（2026-07-30）：工程框架搭建

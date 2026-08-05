@@ -2,7 +2,7 @@
 LLM 差异分析模块
 
 调用 LLM 对每对章节的 diff 结果进行语义分析：
-  - 分类：feature-added / feature-changed / feature-removed / design-diff / param-diff / consistency-issue
+  - 分类：feature_added / feature_changed / feature_removed / design_diff / param_diff / consistency_issue
   - 影响评估：高 / 中 / 低
   - 详细描述（中文）
   - 工作量提示
@@ -506,7 +506,7 @@ def analyze_diff_item(
     except Exception as e:
         logger.error(f"[Analyzer] 调用失败: {e}")
         # 兜底：LLM 不可用时按章节类型降级（Base 独有→feature-removed，
-        # Compare 独有→feature-added，对齐→unknow-diff），与异步路径保持一致
+        # Compare 独有→feature-added，对齐→unknow_diff），与异步路径保持一致
         return _fallback_result(diff_item, f"LLM 调用失败: {e}")
 
 
@@ -548,7 +548,7 @@ def _fallback_result(item: dict, reason: str) -> dict:
 
     - Base 独有章节（compare_section_id 为空）：降级为 feature-removed
     - Compare 独有章节（base_section_id 为空）：降级为 feature-added
-    - 对齐章节（两者都有）：标记为 unknow-diff（LLM 异常，差异类型未知，需重跑确认）
+    - 对齐章节（两者都有）：标记为 unknow_diff（LLM 异常，差异类型未知，需重跑确认）
     """
     if not item.get("compare_section_id"):
         # Base 独有 → feature-removed
@@ -556,7 +556,7 @@ def _fallback_result(item: dict, reason: str) -> dict:
             **item,
             "llm_result": {
                 "diffs": [{
-                    "type": "feature-removed",
+                    "type": "feature_removed",
                     "impact": "中",
                     "base_quote": item.get("base_content", "")[:200],
                     "compare_quote": "",
@@ -572,7 +572,7 @@ def _fallback_result(item: dict, reason: str) -> dict:
             **item,
             "llm_result": {
                 "diffs": [{
-                    "type": "feature-added",
+                    "type": "feature_added",
                     "impact": "中",
                     "base_quote": "",
                     "compare_quote": item.get("compare_content", "")[:200],
@@ -582,19 +582,19 @@ def _fallback_result(item: dict, reason: str) -> dict:
                 "summary": "Compare 独有章节（LLM 兜底）",
             },
         }
-    # 对齐章节 → unknow-diff（LLM 异常，差异类型未知，需重跑确认）
+    # 对齐章节 → unknow_diff（LLM 异常，差异类型未知，需重跑确认）
     return {
         **item,
         "llm_result": {
             "diffs": [{
-                "type": "unknow-diff",
+                "type": "unknow_diff",
                 "impact": "中",
                 "base_quote": item.get("base_content", "")[:200],
                 "compare_quote": item.get("compare_content", "")[:200],
                 "description": f"对齐章节 LLM 分析失败（{reason}），差异类型未知，需重新运行以确认",
                 "workload_hint": "需重新运行以获得准确差异分类",
             }],
-            "summary": f"对齐章节 LLM 调用失败（{reason}），差异类型未知（unknow-diff）",
+            "summary": f"对齐章节 LLM 调用失败（{reason}），差异类型未知（unknow_diff）",
         },
     }
 

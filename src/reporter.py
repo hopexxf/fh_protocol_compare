@@ -1,4 +1,4 @@
-"""
+﻿"""
 Markdown 报告生成模块
 
 将分析结果汇总生成最终的 Markdown 比对报告。
@@ -127,17 +127,17 @@ def generate_report(
     type_rows = ""
     for t, cnt in sorted(stats.get("by_type", {}).items(), key=lambda x: -x[1]):
         label = {
-            "feature-added": "功能新增 (feature-added)",
-            "feature-changed": "功能变更 (feature-changed)",
-            "feature-removed": "功能删除 (feature-removed)",
-            "unknow-diff": "未知差异 (unknow-diff)",
-            "design-diff": "设计差异 (design-diff)",
-            "param-diff": "参数差异 (param-diff)",
-            "consistency-issue": "一致性问题 (consistency-issue)",
-            "new-feature": "新功能章节 (new-feature)",
-            "new-design": "新设计章节 (new-design)",
-            "new-parameter": "新参数章节 (new-parameter)",
-            "scope-diff": "范围差异 (scope-diff)",
+            "feature_added": "功能新增 (feature_added)",
+            "feature_changed": "功能变更 (feature_changed)",
+            "feature_removed": "功能删除 (feature_removed)",
+            "unknow_diff": "未知差异 (unknow_diff)",
+            "design_diff": "设计差异 (design_diff)",
+            "param_diff": "参数差异 (param_diff)",
+            "consistency_issue": "一致性问题 (consistency_issue)",
+            "new_feature": "新功能章节 (new_feature)",
+            "new_design": "新设计章节 (new_design)",
+            "new_parameter": "新参数章节 (new_parameter)",
+            "scope_diff": "范围差异 (scope_diff)",
             "other": "其他 (other)",
         }.get(t, t)
         type_rows += f"| {label} | {cnt} |\n"
@@ -326,7 +326,7 @@ if __name__ == "__main__":
         "has_diff": True,
         "llm_result": {
             "diffs": [{
-                "type": "feature-changed",
+                "type": "feature_changed",
                 "impact": "高",
                 "base_quote": "Protocol version 1.0",
                 "compare_quote": "Protocol version 2.0",
@@ -340,7 +340,7 @@ if __name__ == "__main__":
         "total_sections": 1,
         "sections_with_diff": 1,
         "total_diff_items": 1,
-        "by_type": {"feature-changed": 1},
+        "by_type": {"feature_changed": 1},
         "by_impact": {"高": 1, "中": 0, "低": 0},
     }
     report = generate_report("spec_v1.pdf", "spec_v2.pdf", sample_analyzed, sample_stats)
