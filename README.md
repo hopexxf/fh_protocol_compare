@@ -2,8 +2,8 @@
 
 > **5G NR 前传协议文档比对工程**
 > 状态：✅ 核心功能完成
-> 版本：v1.1
-> 最后更新：2026-08-03
+> 版本：v1.2
+> 最后更新：2026-08-05
 
 ---
 
@@ -34,6 +34,7 @@
 | 参数差异 | `param-diff` | 字段、阈值变化 |
 | 范围差异 | `scope-diff` | 标准组织覆盖范围不同（O-RAN 有 / ASTRI 无） |
 | 一致性问题 | `consistency-issue` | 文档内部不自洽 |
+| 未知差异 | `unknow-diff` | LLM 异常时对齐章节的兜底分类（需重跑确认） |
 
 ---
 
@@ -212,6 +213,10 @@ py -3 main.py --base input/base/O-RAN.pdf --compare input/compare/ASTRI.pdf --ma
 
 # 强制并发（默认 1；Gateway 并发 >1 易挂死，完整 809 条约需数小时）
 py -3 main.py --base input/base/O-RAN.pdf --compare input/compare/ASTRI.pdf --concurrency 1
+
+# 从已有版本目录恢复（跳过 Step 1-4，仅重生成报告）
+# 用于断网后产物丢失或仅修改报告模板后重新生成
+py -3 main.py --resume versions/20260805_O-RAN_vs_ASTRI
 ```
 
 ### 4.2 批量比对
@@ -297,6 +302,17 @@ pytest tests/ -v
 | 响应兼容 JSON/SSE | Gateway 对 stream:False 返回格式不稳定 | `analyzer._extract_content_from_response` |
 | 异常带类型名 | httpcore ReadTimeout.str() 返回空串，失败原因静默丢失 | `analyzer._fmt_err` |
 | 测试后清会话 | 无 `user` 字段的请求会累积临时会话 | `openclaw sessions cleanup --enforce` |
+| 熔断机制（连续失败 ≥阈值） | 断网时快速兜底，避免空转数小时 | `analyzer.fetch_one`（阈值 = max(concurrency*2, 5)） |
+| 不可重试错误即时熔断 | 408/ReadTimeout/ConnectError 不重试 | `analyzer._is_non_retryable_error` |
+
+**熔断行为**：
+- 连续失败 ≥ 阈值后停止 LLM 调用，剩余条目走兜底结果
+- 兜底结果按章节类型分类：Base 独有 → `feature-removed`，Compare 独有 → `feature-added`，对齐章节 → `unknow-diff`
+- 报告正常生成，但差异类型含 "LLM 调用失败" 字样，需联网重跑确认
+
+**断网产物归档**：
+- Step 4.5 在分析完成后**立即归档**中间产物（base_spec.md / compare_spec.md / alignment.json / diff_raw.json / analyzed.json / stats.json）
+- Step 5/6 失败不影响中间产物，可用 `--resume` 从已有目录恢复
 
 **测试会话清理**：`tests/test_gateway_port.py` 的真实 LLM 调用带 `user: "test_gateway_port"` 字段，
 运行后需执行 `openclaw sessions cleanup --enforce` 清理（近期会话受 30 天保留策略约束，可能不立即清除）。
@@ -351,6 +367,11 @@ pytest tests/ -v
 | 目录行 / "Through" 进对齐噪声 | ✅（_is_toc_entry + TOC_CONTENT_SIGNALS） | 494a35b |
 | 表格页码无法溯源至报告 | ✅（_extract_table_page_hint 透传） | 494a35b |
 | Abstract 格式简陋（无工作量定位） | ✅（重设计为三级+维度详述+简表） | 494a35b |
+| 断网卡死（623项×150s×3重试≈26h） | ✅（熔断+短超时+不可重试即时失败） | e0b9dd4 / 3236ba5 |
+| 熔断后仍发 HTTP（semaphore 外检查） | ✅（检查移入 async with sem 内） | e0b9dd4 |
+| 断网时产物丢失（Step 6 崩溃） | ✅（Step 4.5 立即归档中间产物） | 0b88fa0 |
+| Compare 独有无兜底分支 | ✅（feature-added 兜底） | 5842d7f |
+| 对齐章节 LLM 异常被丢弃 | ✅（unknow-diff 非空 diffs） | 5842d7f |
 
 ### 7.2 待改进
 
@@ -415,6 +436,7 @@ httpx>=0.24.0         # 异步并发批量（analyzer.py）
 详见 `CHANGELOG.md`
 
 **关键版本**：
+- **v1.2**（2026-08-05）：断网熔断修复、兜底结果分类（feature-added/unknow-diff）、--resume 参数、中间产物提前归档
 - **v1.1**（2026-08-03）：LLM/Gateway 调用约束固化、测试回归、文档与配置整理
 - **v1.0**（2026-08-01）：核心功能完成，表格提取方案完成
 - **v0.1**（2026-07-30）：工程框架搭建
