@@ -291,6 +291,18 @@ class TestReportEdgeCases:
         impact_counts = report.count("高")
         assert impact_counts >= 1
 
+    def test_unknow_diff_label_rendered(self):
+        """unknow-diff 应在类型分布表中渲染为中文标签（任务 2 标签修复）。"""
+        stats = {
+            "total_sections": 1, "sections_with_diff": 1,
+            "total_diff_items": 1, "by_type": {"unknow-diff": 1},
+            "by_impact": {"中": 1, "高": 0, "低": 0},
+        }
+        report = generate_report("a.pdf", "b.pdf", SAMPLE_ANALYZED, stats)
+        assert "未知差异 (unknow-diff)" in report, "unknow-diff 应渲染为中文标签"
+        # 裸 type 名不应直接出现（说明走了标签映射而非兜底原值）
+        assert "| unknow-diff |" not in report
+
     def test_long_titles_truncated_in_anchor(self):
         """长标题在锚点中不应导致格式问题"""
         long_title_item = [

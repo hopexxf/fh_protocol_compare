@@ -130,6 +130,7 @@ def generate_report(
             "feature-added": "功能新增 (feature-added)",
             "feature-changed": "功能变更 (feature-changed)",
             "feature-removed": "功能删除 (feature-removed)",
+            "unknow-diff": "未知差异 (unknow-diff)",
             "design-diff": "设计差异 (design-diff)",
             "param-diff": "参数差异 (param-diff)",
             "consistency-issue": "一致性问题 (consistency-issue)",

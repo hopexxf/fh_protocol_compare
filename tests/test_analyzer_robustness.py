@@ -28,6 +28,7 @@ from src.analyzer import (
     MAX_LLM_CONTENT_CHARS,
     _build_messages,
     _extract_content_from_response,
+    _fallback_result,
 )
 from src.llm_client import _get_gateway_port
 
@@ -242,8 +243,9 @@ def test_batch_partial_failure_resilient():
     否则连续失败会触发熔断、后续 item 不再重试直接兜底（见 test_batch_circuit_breaker_all_fail）。
     """
     results = _run_batch(_make_items(20), fail_first_n=3, concurrency=5)
-    success = [r for r in results if r["llm_result"].get("diffs")]
+    # 失败项（LLM 异常兜底，summary 含 "LLM 调用失败"）；成功项 summary 为 LLM 原始输出
     failed = [r for r in results if "LLM 调用失败" in r["llm_result"].get("summary", "")]
+    success = [r for r in results if r not in failed]
     assert len(success) == 17, f"成功数应为 17，实际 {len(success)}"
     assert len(failed) == 3, f"失败数应为 3，实际 {len(failed)}"
     for r in failed:
@@ -354,6 +356,52 @@ def test_fallback_base_only_feature_removed():
         diffs = r["llm_result"].get("diffs", [])
         assert diffs, "Base 独有章节兜底应有 feature-removed diff"
         assert diffs[0]["type"] == "feature-removed", "兜底类型应为 feature-removed"
+
+
+def _make_items_compare_only(n):
+    """Compare 独有章节（base_section_id=None，compare_section_id 有值）。"""
+    items = []
+    for i in range(n):
+        items.append({
+            "base_section_id": None,
+            "compare_section_id": f"c{i}",
+            "has_diff": True,
+            "base_content": "",
+            "compare_content": f"compare {i}",
+        })
+    return items
+
+
+def test_fallback_compare_only_feature_added():
+    """Compare 独有章节在 LLM 不可用时兜底为 feature-added（任务 1）。"""
+    item = {
+        "base_section_id": None,
+        "compare_section_id": "c0",
+        "base_content": "",
+        "compare_content": "compare 0",
+    }
+    r = _fallback_result(item, "ConnectError: simulated")
+    diffs = r["llm_result"]["diffs"]
+    assert diffs, "Compare 独有章节兜底应有 feature-added diff"
+    assert diffs[0]["type"] == "feature-added", "兜底类型应为 feature-added"
+
+
+def test_fallback_aligned_unknow_diff():
+    """对齐章节在 LLM 异常时兜底为 unknow-diff（任务 3：仅 LLM 异常的对齐章节）。
+
+    回归：修复前对齐章节兜底为空 diffs，被 reporter 的 `if not diffs: continue` 丢弃，
+    导致这类章节在断网报告中完全消失。
+    """
+    item = {
+        "base_section_id": "b0",
+        "compare_section_id": "c0",
+        "base_content": "base 0",
+        "compare_content": "compare 0",
+    }
+    r = _fallback_result(item, "熔断开启")
+    diffs = r["llm_result"]["diffs"]
+    assert diffs, "对齐章节 LLM 异常兜底不应为空（否则被 reporter 丢弃）"
+    assert diffs[0]["type"] == "unknow-diff", "对齐章节 LLM 异常兜底类型应为 unknow-diff"
 
 
 def test_batch_base_only_goes_to_llm():

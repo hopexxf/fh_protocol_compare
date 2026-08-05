@@ -505,23 +505,9 @@ def analyze_diff_item(
         return _parse_llm_result(diff_item, raw)
     except Exception as e:
         logger.error(f"[Analyzer] 调用失败: {e}")
-        if not compare_id:
-            # 兜底：LLM 不可用时，Base 独有章节降级为 feature-removed
-            return {
-                **diff_item,
-                "llm_result": {
-                    "diffs": [{
-                        "type": "feature-removed",
-                        "impact": "中",
-                        "base_quote": diff_item.get("base_content", "")[:200],
-                        "compare_quote": "",
-                        "description": "Base 版本中此章节在 Compare 版本中不存在（LLM 分析失败，默认标记）",
-                        "workload_hint": "需确认该功能是否仍在 Compare 中实现",
-                    }],
-                    "summary": "Base 独有章节（LLM 兜底）",
-                },
-            }
-        return {**diff_item, result_key: {"diffs": [], "summary": f"LLM 调用失败: {e}"}}
+        # 兜底：LLM 不可用时按章节类型降级（Base 独有→feature-removed，
+        # Compare 独有→feature-added，对齐→unknow-diff），与异步路径保持一致
+        return _fallback_result(diff_item, f"LLM 调用失败: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -560,10 +546,12 @@ def _fmt_err(e: Exception) -> str:
 def _fallback_result(item: dict, reason: str) -> dict:
     """LLM 不可用时构造兜底结果，保证后续流程（报告生成等）可继续。
 
-    - Base 独有章节：降级为 feature-removed（与 analyze_diff_item 兜底一致）
-    - 对齐 / Compare 独有：空 diffs + 失败原因（reporter 只消费 llm_result.diffs，兼容）
+    - Base 独有章节（compare_section_id 为空）：降级为 feature-removed
+    - Compare 独有章节（base_section_id 为空）：降级为 feature-added
+    - 对齐章节（两者都有）：标记为 unknow-diff（LLM 异常，差异类型未知，需重跑确认）
     """
     if not item.get("compare_section_id"):
+        # Base 独有 → feature-removed
         return {
             **item,
             "llm_result": {
@@ -578,7 +566,37 @@ def _fallback_result(item: dict, reason: str) -> dict:
                 "summary": "Base 独有章节（LLM 兜底）",
             },
         }
-    return {**item, "llm_result": {"diffs": [], "summary": f"LLM 调用失败: {reason}"}}
+    if not item.get("base_section_id"):
+        # Compare 独有 → feature-added
+        return {
+            **item,
+            "llm_result": {
+                "diffs": [{
+                    "type": "feature-added",
+                    "impact": "中",
+                    "base_quote": "",
+                    "compare_quote": item.get("compare_content", "")[:200],
+                    "description": f"Compare 版本中此章节在 Base 版本中不存在（LLM 不可用: {reason}）",
+                    "workload_hint": "需确认该功能是否为 Compare 新增",
+                }],
+                "summary": "Compare 独有章节（LLM 兜底）",
+            },
+        }
+    # 对齐章节 → unknow-diff（LLM 异常，差异类型未知，需重跑确认）
+    return {
+        **item,
+        "llm_result": {
+            "diffs": [{
+                "type": "unknow-diff",
+                "impact": "中",
+                "base_quote": item.get("base_content", "")[:200],
+                "compare_quote": item.get("compare_content", "")[:200],
+                "description": f"对齐章节 LLM 分析失败（{reason}），差异类型未知，需重新运行以确认",
+                "workload_hint": "需重新运行以获得准确差异分类",
+            }],
+            "summary": f"对齐章节 LLM 调用失败（{reason}），差异类型未知（unknow-diff）",
+        },
+    }
 
 
 def _is_mock_client(client) -> bool:
